@@ -1,0 +1,103 @@
+{
+  "designSystem": {
+    "theme": {
+      "colorPalette": {
+        "primary": "#4B3DFE",
+        "secondary": "#00C2FF",
+        "accent": "#FFD500",
+        "backgrounds": ["#FFFFFF", "#F4F4F4"],
+        "textPrimary": "#1C1C1C",
+        "textSecondary": "#6B6B6B",
+        "buttonText": "#FFFFFF"
+      },
+      "typography": {
+        "headingFont": "Sans-serif",
+        "bodyFont": "Sans-serif",
+        "headingWeight": "600",
+        "bodyWeight": "400",
+        "sizes": {
+          "heading": "20px",
+          "subheading": "16px",
+          "body": "14px"
+        }
+      },
+      "spacing": {
+        "padding": "20px",
+        "marginBetweenElements": "16px",
+        "cardCornerRadius": "20px",
+        "buttonCornerRadius": "12px"
+      }
+    },
+    "layout": {
+      "orientation": "vertical",
+      "cardLayout": true,
+      "cardStructure": {
+        "top": "illustrationArea",
+        "middle": "textContent",
+        "bottom": "navigationButton"
+      },
+      "screenWidth": "100%",
+      "screenHeight": "100%",
+      "alignment": "center"
+    },
+    "components": {
+      "illustrationArea": {
+        "type": "vectorOrPlaceholder",
+        "alignment": "center",
+        "maxHeight": "50%"
+      },
+      "textContent": {
+        "title": {
+          "type": "text",
+          "fontSize": "20px",
+          "fontWeight": "600",
+          "alignment": "center"
+        },
+        "description": {
+          "type": "text",
+          "fontSize": "14px",
+          "fontWeight": "400",
+          "alignment": "center"
+        }
+      },
+      "navigationButton": {
+        "type": "button",
+        "textOptions": ["Next", "Previous", "Get started"],
+        "alignment": "right",
+        "buttonStyle": {
+          "backgroundColor": "#1C1C1C",
+          "textColor": "#FFFFFF",
+          "borderRadius": "12px",
+          "padding": "12px 24px"
+        }
+      }
+    },
+    "interaction": {
+      "swipeEnabled": false,
+      "buttonProgression": true,
+      "transitions": {
+        "type": "fade",
+        "duration": "300ms"
+      }
+    },
+    "accessibility": {
+      "contrastCompliant": true,
+      "textScalable": true,
+      "buttonsLargeEnough": true
+    },
+    "screenSequence": [
+      {
+        "title": "Order your food",
+        "description": "Now you can order food any time right from your mobile"
+      },
+      {
+        "title": "Cook & transfer safe food",
+        "description": "We are maintain safety and keep clean while making food"
+      },
+      {
+        "title": "Quick delivery",
+        "description": "Orders your favourites meals will be immediately deliver."
+      }
+    ]
+  }
+}
