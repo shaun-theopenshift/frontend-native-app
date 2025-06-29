@@ -2,23 +2,28 @@ import type { StackNavigationProp } from '@react-navigation/stack';
 import { createStackNavigator } from '@react-navigation/stack';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    Animated,
-    Dimensions,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Animated,
+  Dimensions,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 // @ts-ignore
 import { Ionicons } from '@expo/vector-icons';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import * as AuthSession from 'expo-auth-session';
+import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
 import auth0Config from './auth0Config';
-import InboxScreen from './staff/InboxScreen';
-import JobScreen from './staff/JobScreen';
+import ProfileScreenOrg from './organization/ProfileScreenOrg.js';
+import RoleSelectionScreen from './RoleSelectionScreen.js';
 import AccountScreen from './staff/AccountScreen.js';
+import InboxScreen from './staff/InboxScreen';
+import JobScreenStaff from './staff/JobScreenStaff.js';
+import ProfileCreateScreen from './staff/ProfileCreateScreen.js';
 import ProfileScreen from './staff/ProfileScreen.js';
+import StartJob from './staff/StartJob.js';
 
 // Get device width for responsive design
 const { width } = Dimensions.get('window');
@@ -97,7 +102,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-start',
     alignItems: 'center',
-    paddingTop: 160, // space below the semi-circle
+    paddingTop: 160,
     width: '100%',
     zIndex :1,
     position:"relative",
@@ -106,10 +111,30 @@ const styles = StyleSheet.create({
 
 type RootStackParamList = {
   Splash: undefined;
+  StartJob: { booking: any };
+  Job: undefined;
+  Account: undefined;
+  Inbox: undefined;
   MainTabs: { access_token: string };
+  RoleSelection: { access_token: string };
+  Profile: { access_token: string };
+  ProfileOrg: { access_token: string };
+  ProfileCreate: { access_token: string };
 };
 
+
 const Stack = createStackNavigator<RootStackParamList>();
+
+const JobStack = createStackNavigator();
+
+function JobStackScreen() {
+  return (
+    <JobStack.Navigator screenOptions={{ headerShown: false }}>
+      <JobStack.Screen name="Job" component={JobScreenStaff} />
+      <JobStack.Screen name="StartJob" component={StartJob} />
+    </JobStack.Navigator>
+  );
+}
 
 interface SplashScreenProps {
   navigation: StackNavigationProp<RootStackParamList, 'Splash'>;
@@ -171,7 +196,7 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
       redirectUri,
       scopes: ['openid', 'profile', 'email'],
       responseType: AuthSession.ResponseType.Token,
-      extraParams: { audience: 'https://api.theopenshift.com' },
+      extraParams: { audience: 'https://api.theopenshift.com', prompt: 'login' },
     },
     discovery
   );
@@ -179,7 +204,30 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
     const result = await promptAsync();
     if (result?.type === 'success') {
       const { access_token } = result.params;
-      navigation.replace('MainTabs', { access_token });
+      console.log('Access Token:', access_token);
+      // Save the access token to SecureStore for later use
+      await SecureStore.setItemAsync('access_token', access_token);
+      // Start the background animation
+      animateCurve();
+      // 1. Check role using /v1/roles/me (preferred, as per schema)
+      fetch('https://api.theopenshift.com/v1/roles/me', {
+        headers: { Authorization: `Bearer ${access_token}` },
+      })
+        .then(async res => {
+          if (res.ok) {
+            const data = await res.json();
+            if (data && data.role) {
+              // Always go to MainTabs after login, regardless of role
+              navigation.replace('MainTabs', { access_token });
+              return;
+            }
+          }
+          // If no role, go to RoleSelectionScreen
+          navigation.replace('RoleSelection', { access_token });
+        })
+        .catch(() => {
+          navigation.replace('RoleSelection', { access_token });
+        });
     }
   };
   WebBrowser.maybeCompleteAuthSession();
@@ -252,7 +300,7 @@ function MainTabs(props: any) {
     >
       <Tab.Screen name="Profile" component={ProfileScreen} initialParams={{ access_token }} />
       <Tab.Screen name="Inbox" component={InboxScreen} />
-      <Tab.Screen name="Job" component={JobScreen} />
+      <Tab.Screen name="Job" component={JobStackScreen} />
       <Tab.Screen name="Account" component={AccountScreen} />
     </Tab.Navigator>
   );
@@ -262,7 +310,11 @@ export default function App() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Splash" component={SplashScreen} />
+      <Stack.Screen name="RoleSelection" component={RoleSelectionScreen} />
+      <Stack.Screen name="Profile" component={ProfileScreen} />
+      <Stack.Screen name="ProfileOrg" component={ProfileScreenOrg} />
       <Stack.Screen name="MainTabs" component={MainTabs} />
+      <Stack.Screen name="ProfileCreate" component={ProfileCreateScreen} />
     </Stack.Navigator>
   );
 }

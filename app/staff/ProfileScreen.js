@@ -1,7 +1,8 @@
 import { AntDesign, Feather, FontAwesome5, Ionicons, MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
+import { useFocusEffect } from '@react-navigation/native';
+import * as SecureStore from 'expo-secure-store';
 import React, { useEffect, useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   Image,
   KeyboardAvoidingView,
@@ -13,7 +14,7 @@ import {
   TextInput,
   ToastAndroid,
   TouchableOpacity,
-  View,
+  View
 } from "react-native";
 
 const API_URL = "https://api.theopenshift.com/v1/users/me";
@@ -49,8 +50,10 @@ const customTick = (
   </View>
 );
 
-const ProfileScreen = ({ route, navigation }) => {
-  const { access_token } = route.params;
+const ProfileScreen = ({ route = {}, navigation }) => {
+  const params = route.params || {};
+  const [accessToken, setAccessToken] = useState('');
+  const [tokenResolved, setTokenResolved] = useState(false); // Always false initially
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("current");
@@ -65,23 +68,100 @@ const ProfileScreen = ({ route, navigation }) => {
   const [availabilityObj, setAvailabilityObj] = useState(null);
   // --- Additional Details Display/Edit Toggle ---
   const [isEditingAdditional, setIsEditingAdditional] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
+  // Always resolve access_token from SecureStore on every focus (industry best practice)
+  useFocusEffect(
+    React.useCallback(() => {
+      let isActive = true;
+      const resolveToken = async () => {
+        let token = await SecureStore.getItemAsync('access_token');
+        console.log('[ProfileScreen] Resolved token from SecureStore:', token);
+        if (isActive) {
+          setAccessToken(token || '');
+          setTokenResolved(true);
+        }
+      };
+      setTokenResolved(false); // Reset before resolving
+      resolveToken();
+      return () => { isActive = false; };
+    }, [navigation])
+  );
+
+  // Fetch user details only when tokenResolved and accessToken are both ready
   useEffect(() => {
+    let isActive = true;
+    if (!tokenResolved) {
+      setLoading(true);
+      console.log('[ProfileScreen] Waiting for token to resolve...');
+      return;
+    }
+    if (!accessToken) {
+      setLoading(false);
+      setUser(null);
+      setErrorMsg('No access token found.');
+      console.log('[ProfileScreen] No accessToken after tokenResolved.');
+      return;
+    }
+    setLoading(true);
+    console.log('[ProfileScreen] Fetching user profile with token:', accessToken);
     fetch(API_URL, {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        setUser(data);
-        setLoading(false);
+      .then(async (res) => {
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = null;
+        }
+        if (!res.ok) {
+          console.log('[ProfileScreen] /v1/users/me error:', res.status, data);
+          throw new Error(data?.message || 'User fetch failed');
+        }
+        console.log('[ProfileScreen] /v1/users/me success:', data);
+        return data;
       })
-      .catch(() => {
-        setUser(null);
-        setLoading(false);
+      .then((data) => {
+        if (isActive) {
+          if (!data || data.error) {
+            setUser(null);
+            setLoading(false);
+            setErrorMsg('No user data returned from API.');
+            console.log('[ProfileScreen] No user data returned from API:', data);
+            return;
+          }
+          setUser(data);
+          setLoading(false);
+          setErrorMsg('');
+        }
+      })
+      .catch((err) => {
+        if (isActive) {
+          setUser(null);
+          setLoading(false);
+          setErrorMsg(err.message || 'User fetch error');
+          console.log('[ProfileScreen] User fetch error:', err);
+        }
       });
-  }, [access_token]);
+    return () => { isActive = false; };
+  }, [tokenResolved, accessToken]);
+
+  // Fetch availability when token is resolved and accessToken is ready
+  useEffect(() => {
+    if (!tokenResolved || !accessToken) return;
+    fetch(AVAILABILITY_URL, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && typeof data.availability === 'object' && data.availability !== null) {
+          setAvailabilityObj(data.availability);
+        } else {
+          setAvailabilityObj(null);
+        }
+      });
+  }, [tokenResolved, accessToken]);
 
   useEffect(() => {
     if (user) {
@@ -99,20 +179,46 @@ const ProfileScreen = ({ route, navigation }) => {
     }
   }, [user]);
 
-  // Fetch availability separately
+  // Fetch user details when accessToken changes
   useEffect(() => {
+    if (!accessToken) return;
+    setLoading(true);
+    fetch(API_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        setUser(data);
+        setLoading(false);
+      })
+      .catch(() => {
+        setUser(null);
+        setLoading(false);
+      });
+  }, [accessToken]);
+
+  // Fetch availability separately and ensure correct token and user_id usage
+  useEffect(() => {
+    if (!accessToken) return;
     fetch(AVAILABILITY_URL, {
-      headers: { Authorization: `Bearer ${access_token}` },
+      headers: { Authorization: `Bearer ${accessToken}` },
     })
       .then(res => res.ok ? res.json() : null)
-      .then(data => setAvailabilityObj(data?.availability || null));
-  }, [access_token]);
+      .then(data => {
+        if (data && typeof data.availability === 'object' && data.availability !== null) {
+          setAvailabilityObj(data.availability);
+        } else {
+          setAvailabilityObj(null);
+        }
+      });
+  }, [accessToken]);
 
   const showToast = (msg) => {
     if (Platform.OS === 'android') {
       ToastAndroid.show(msg, ToastAndroid.SHORT);
     } else {
-      // For iOS, use a simple fallback (can be replaced with a better toast lib)
       Alert.alert('', msg);
     }
   };
@@ -120,13 +226,14 @@ const ProfileScreen = ({ route, navigation }) => {
   const patchUser = async (data, onSuccess) => {
     setSaving(true);
     try {
+      const { availability, ...dataWithoutAvailability } = data;
       const res = await fetch(PATCH_URL, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${access_token}`,
+          Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify(dataWithoutAvailability),
       });
       if (res.ok) {
         const updated = await res.json();
@@ -147,22 +254,26 @@ const ProfileScreen = ({ route, navigation }) => {
   const patchAvailability = async (days, onSuccess) => {
     setSaving(true);
     try {
+      const filteredDays = Object.keys(days).reduce((acc, key) => {
+        if (days[key]) acc[key] = true;
+        return acc;
+      }, {});
       const res = await fetch(AVAILABILITY_URL, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${access_token}`,
+          Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ availability: days }),
+        body: JSON.stringify({ availability: filteredDays }),
       });
       if (res.ok) {
         showToast('Availability saved!');
         // Fetch latest availability for display
         const getRes = await fetch(AVAILABILITY_URL, {
-          headers: { Authorization: `Bearer ${access_token}` },
+          headers: { Authorization: `Bearer ${accessToken}` },
         });
         const data = getRes.ok ? await getRes.json() : null;
-        setAvailabilityObj(data?.availability || days);
+        setAvailabilityObj(data?.availability || filteredDays);
         onSuccess && onSuccess();
       } else {
         showToast('Failed to save availability.');
@@ -173,424 +284,512 @@ const ProfileScreen = ({ route, navigation }) => {
     setSaving(false);
   };
 
+  const handleLogout = async () => {
+    try {
+      // Clear tokens and session
+      await SecureStore.deleteItemAsync("access_token");
+      await SecureStore.deleteItemAsync("refresh_token");
+      await SecureStore.deleteItemAsync("user");
+      if (require('expo-auth-session').getAuthSessionAsyncStorage) {
+        const storage = require('expo-auth-session').getAuthSessionAsyncStorage();
+        if (storage && storage.clear) {
+          await storage.clear();
+        }
+      }
+    } catch (e) {
+      console.log('Logout error:', e);
+    }
+    navigation.reset({ index: 0, routes: [{ name: "Splash" }] });
+  };
+
   if (loading) {
-    return <ActivityIndicator style={{ flex: 1 }} />;
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+        <Text style={{ fontSize: 20, color: '#334eb8', fontWeight: 'bold' }}>Loading profile...</Text>
+      </View>
+    );
   }
 
   if (!user) {
     return (
       <View style={styles.centered}>
         <Text style={styles.noUser}>No user found.</Text>
+        {errorMsg ? <Text style={{color:'#e53935', marginTop:8}}>{errorMsg}</Text> : null}
+      </View>
+    );
+  }
+
+  if (!tokenResolved) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+        <Text style={{ fontSize: 18, color: '#334eb8', fontWeight: 'bold' }}>Resolving session...</Text>
+      </View>
+    );
+  }
+
+  if (!accessToken) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#fff' }}>
+        <Text style={{ fontSize: 18, color: '#e53935', fontWeight: 'bold', marginBottom: 16 }}>Session expired</Text>
+        <TouchableOpacity onPress={handleLogout} style={{ backgroundColor: '#334eb8', borderRadius: 8, paddingHorizontal: 18, paddingVertical: 10 }}>
+          <Text style={{ color: '#fff', fontWeight: 'bold' }}>Log in again</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
   return (
-    <ScrollView style={{ flex: 1, backgroundColor: "#fff" }}>
-      <View style={styles.header}>
-        <Text style={styles.profileTitle}>Hi, {user.fname}!</Text>
-        <Image
-          source={{
-            uri: user.picture || "https://i.pravatar.cc/300",
-          }}
-          style={styles.avatar}
-        />
-        {/* Verified/Unverified badge */}
-        <View style={{flexDirection:'row', alignItems:'center', marginBottom: 6}}>
-          <MaterialCommunityIcons name="alert-circle" size={18} color="#e53935" style={{marginRight: 4}} />
-          <Text style={{color:'#e53935', fontWeight:'bold', fontSize:15, marginRight: 8}}>Unverified</Text>
-        </View>
-        {/* Bio with edit icon out of the screen */}
-        <View style={{flexDirection:'row', alignItems:'center', justifyContent:'center', width:'100%', position:'relative', marginBottom: 8}}>
-          <Text style={styles.bioText}>{user.bio}</Text>
-          <TouchableOpacity onPress={() => { setEditBio(user.bio || ""); setEditBioModalVisible(true); }} style={{position:'absolute', right: 18, top: 0, padding: 4, zIndex: 2}}>
-            <Ionicons name="create-outline" size={20} color="#334eb8" />
-          </TouchableOpacity>
-        </View>
-        <View style={styles.tabRow}>
-          <TouchableOpacity
-            style={[
-              styles.tabButton,
-              tab === "current" && { ...styles.tabButtonActive, borderBottomWidth: 2, borderBottomColor: "#f55b5f" },
-            ]}
-            onPress={() => setTab("current")}
-          >
-            <Text
-              style={[
-                styles.tabText,
-                tab === "current" && styles.tabTextActive,
-              ]}
-            >
-              Current Details
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.tabButton,
-              tab === "additional" && { ...styles.tabButtonActive, borderBottomWidth: 2, borderBottomColor: "#f55b5f" },
-            ]}
-            onPress={() => setTab("additional")}
-          >
-            <Text
-              style={[
-                styles.tabText,
-                tab === "additional" && styles.tabTextActive,
-              ]}
-            >
-              Additional Details
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-      {tab === "current" ? (
-        <>
-          <ProfileCard
-            color="#D6D6FF"
-            label="Personal information"
-            values={[
-              <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="name">{iconMap.name}<Text>{user.fname + " " + user.lname}</Text></View>,
-              <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="phone">{iconMap.phone}<Text>{user.phone}</Text></View>,
-              <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="dob">{iconMap.dob}<Text>{user.dob}</Text></View>,
-              <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="gender">{iconMap.gender}<Text>{user.gender}</Text></View>,
-              <View style={{flexDirection:'row', alignItems:'center'}} key="address">{iconMap.address}<Text>{user.address}</Text></View>,
+    <View style={{ flex: 1 }}>
+      {/* Floating Logout Button */}
+      <TouchableOpacity
+        style={{
+          position: 'absolute',
+          top: 40,
+          right: 20,
+          zIndex: 100,
+          backgroundColor: '#fff',
+          borderRadius: 24,
+          padding: 10,
+          shadowColor: '#000',
+          shadowOpacity: 0.1,
+          shadowRadius: 4,
+          elevation: 4,
+        }}
+        onPress={handleLogout}
+        accessibilityLabel="Logout"
+      >
+        <Ionicons name="log-out-outline" size={24} color="#334eb8" />
+      </TouchableOpacity>
 
-            ]}
-            onEdit={() => {
-              setEditData({
-                fname: user.fname,
-                lname: user.lname,
-                phone: user.phone,
-                dob: user.dob,
-                gender: user.gender,
-                address: user.address,
-              });
-              setEditModalVisible(true);
+      <ScrollView style={{ flex: 1, backgroundColor: "#fff" }} contentContainerStyle={{ paddingBottom: 100 }}>
+        <View style={styles.header}>
+          <Text style={styles.profileTitle}>Hi, {user.fname}!</Text>
+          <Image
+            source={{
+              uri: user.picture || "https://i.pravatar.cc/150",
             }}
+            style={styles.avatar}
           />
-          <ProfileCard
-            color="#A6F7E2"
-            label="Emergency Contact"
-            values={[
-              <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="emergency">{iconMap.emergency}<Text>{user.emergency_contact}</Text></View>,
-              <View style={{flexDirection:'row', alignItems:'center'}} key="emergency_phone">{iconMap.phone}<Text>{user.emergency_contact_phone}</Text></View>,
-            ]}
-            onEdit={() => {
-              setEditData({
-                emergency_contact: user.emergency_contact,
-                emergency_contact_phone: user.emergency_contact_phone,
-              });
-              setEditModalVisible(true);
-            }}
-          />
-          <ProfileCard
-            color="#fff"
-            label="Tax Information"
-            values={[
-              <View style={{flexDirection:'row', alignItems:'center'}} key="tfn">{iconMap.tfn}<Text>{user.tfn === null ? "No TFN provided" : user.tfn}</Text></View>,
-            ]}
-            onEdit={() => {
-              setEditData({ tfn: user.tfn });
-              setEditModalVisible(true);
-            }}
-          />
-          <ProfileCard
-            color="#FFF7C2"
-            label="Skills"
-            values={user.skills && user.skills.length ? user.skills : ["No skills added"]}
-            onEdit={() => {
-              setEditData({ skills: user.skills });
-              setEditModalVisible(true);
-            }}
-          />
-        </>
-      ) : (
-        // --- Additional Details Horizontal Stepper ---
-        isEditingAdditional ? (
-          <HorizontalStepper 
-            user={user} 
-            patchUser={(data) => patchUser(data, () => setIsEditingAdditional(false))} 
-            onDone={()=>setIsEditingAdditional(false)} 
-            onBack={()=>setIsEditingAdditional(false)}
-          />
-        ) : (
-          <View style={{padding:18}}>
-            <View style={{flexDirection:'row', alignItems:'center', marginBottom:12}}>
-              <Text style={{fontWeight:'bold', fontSize:22, flex:1}}>Additional Details</Text>
-              <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{padding:8}}>
-                <Ionicons name="create-outline" size={22} color="#334eb8" />
-              </TouchableOpacity>
-            </View>
-            {/* Skills 
-            <View style={{flexDirection:'row', flexWrap:'wrap', marginBottom:16}}>
-              {(user.skills||[]).map((skill, i) => (
-                <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8}}>
-                  <Text style={{color:'#334eb8', fontWeight:'bold'}}>{skill}</Text>
-                </View>
-              ))}
-            </View>*/}
-            {/* Preferred hours */}
-            <View style={{marginBottom:16}}>
-              <View style={{flexDirection:'row', alignItems:'center'}}>
-                <Feather name="clock" size={18} color="#334eb8" style={{marginRight:6}} />
-                <Text style={{fontWeight:'bold', fontSize:18}}>Preferred hours</Text>
-                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
-                  <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
-                </TouchableOpacity> */}
-              </View>
-              <Text style={{color:'#888', marginTop:2}}>Support sessions don't need to fill each time slot completely.</Text>
-              <Text style={{color:'#bbb', fontStyle:'italic', marginTop:2}}>
-                {availabilityObj && Object.values(availabilityObj).some(Boolean)
-                  ? Object.entries(availabilityObj).filter(([k,v])=>v).map(([k])=>k.charAt(0).toUpperCase()+k.slice(1)).join(', ')
-                  : 'No availability set.'}
+          {/* Verified/Unverified badge */}
+          <View style={{flexDirection:'row', alignItems:'center', marginBottom: 6}}>
+            <MaterialCommunityIcons name="alert-circle" size={18} color="#e53935" style={{marginRight: 4}} />
+            <Text style={{color:'#e53935', fontWeight:'bold', fontSize:15, marginRight: 8}}>Unverified</Text>
+          </View>
+          {/* Bio with edit icon out of the screen */}
+          <View style={{flexDirection:'row', alignItems:'center', justifyContent:'center', width:'100%', position:'relative', marginBottom: 8}}>
+            <Text style={styles.bioText}>{user.bio}</Text>
+            <TouchableOpacity onPress={() => { setEditBio(user.bio || ""); setEditBioModalVisible(true); }} style={{position:'absolute', right: 18, top: 0, padding: 4, zIndex: 2}}>
+              <Ionicons name="create-outline" size={20} color="#334eb8" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.tabRow}>
+            <TouchableOpacity
+              style={[
+                styles.tabButton,
+                tab === "current" && { ...styles.tabButtonActive, borderBottomWidth: 2, borderBottomColor: "#f55b5f" },
+              ]}
+              onPress={() => setTab("current")}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  tab === "current" && styles.tabTextActive,
+                ]}
+              >
+                Current Details
               </Text>
-            </View>
-            {/* Indicative rates */}
-            <View style={{marginBottom:16}}>
-              <View style={{flexDirection:'row', alignItems:'center'}}>
-                <Feather name="dollar-sign" size={18} color="#334eb8" style={{marginRight:6}} />
-                <Text style={{fontWeight:'bold', fontSize:18}}>Indicative rates</Text>
-                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
-                  <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
-                </TouchableOpacity> */}
-              </View>
-              <Text style={{marginTop:2}}>{user.indicative_rate ? user.indicative_rate : 'Not set'}</Text>
-              <View style={{backgroundColor:'#e6edff', borderRadius:8, padding:10, marginTop:10}}>
-                <Text style={{fontWeight:'bold', color:'#334eb8'}}>Disabled</Text>
-                <Text style={{marginTop:4, color:'#444'}}>This section is currently disabled</Text>
-              </View>
-            </View>
-            {/* Badges */}
-            <View style={{marginBottom:16}}>
-              <View style={{flexDirection:'row', alignItems:'center'}}>
-                <Feather name="star" size={18} color="#334eb8" style={{marginRight:6}} />
-                <Text style={{fontWeight:'bold', fontSize:18}}>Badges</Text>
-                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
-                  <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
-                </TouchableOpacity> */}
-              </View>
-              <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:6}}>
-                {(user.badges||[]).map((badge, i) => {
-                  const badgeMap = {
-                    lgbtq: { label: 'LGBTQIA+ Friendly', emoji: '🏳️‍🌈' },
-                    non_smoker: { label: 'Non-Smoker', emoji: '🚭' },
-                    pet_friendly: { label: 'Pet Friendly', emoji: '🐾' },
-                  };
-                  const b = badgeMap[badge] || { label: badge, emoji: '' };
-                  return (
-                    <View key={i} style={{backgroundColor:'#f7f8fa', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
-                      <Text style={{fontSize:18, marginRight:4}}>{b.emoji}</Text>
-                      <Text style={{color:'#334eb8', fontWeight:'bold'}}>{b.label}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-            {/* Immunisation */}
-            <View style={{marginBottom:16}}>
-              <View style={{flexDirection:'row', alignItems:'center'}}>
-                <Feather name="shield" size={18} color="#334eb8" style={{marginRight:6}} />
-                <Text style={{fontWeight:'bold', fontSize:18}}>Immunisation</Text>
-                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
-                  <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
-                </TouchableOpacity> */}
-              </View>
-              <View style={{marginTop:6}}>
-                {(user.vaccinations||[]).map((v, i) => {
-                  const vacMap = {
-                    covid_19: { label: 'COVID-19 vaccine', emoji: '💉' },
-                    flu: { label: 'Seasonal flu vaccine', emoji: '🤧' },
-                    tetanus: { label: 'Tetanus vaccine', emoji: '🩹' },
-                  };
-                  const vObj = vacMap[v] || { label: v, emoji: '' };
-                  return (
-                    <Text key={i} style={{marginBottom:2}}>{vObj.emoji} {vObj.label} - <Text style={{color:'#888'}}>Self declared</Text></Text>
-                  );
-                })}
-              </View>
-            </View>
-            {/* Services Provided */}
-            <View style={{marginBottom:16}}>
-              <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="briefcase" size={18} color="#334eb8" /> Services Provided</Text>
-              <View style={{flexDirection:'row', flexWrap:'wrap'}}>
-                {(user.services||[]).map((s, i) => {
-                  const serviceMap = {
-                    everyday: 'Everyday Activities Support',
-                    self_care: 'Self-Care Assistance',
-                    nursing: 'Skilled Nursing Care',
-                    healthcare: 'Allied Health Services',
-                  };
-                  return (
-                    <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8}}>
-                      <Text style={{color:'#334eb8', fontWeight:'bold'}}>{serviceMap[s] || s}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-            {/* Languages */}
-            <View style={{marginBottom:16}}>
-              <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="globe" size={18} color="#334eb8" /> Languages</Text>
-              <View style={{flexDirection:'row', flexWrap:'wrap'}}>
-                {(user.languages||[]).map((lang, i) => {
-                  const langMap = {
-                    english: { label: 'English', emoji: '🇬🇧' },
-                    spanish: { label: 'Spanish', emoji: '🇪🇸' },
-                    french: { label: 'French', emoji: '🇫🇷' },
-                    german: { label: 'German', emoji: '🇩🇪' },
-                    chinese: { label: 'Chinese', emoji: '🇨🇳' },
-                    other: { label: 'Other', emoji: '🌐' },
-                  };
-                  const l = langMap[lang] || { label: lang, emoji: '🌐' };
-                  return (
-                    <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
-                      <Text style={{fontSize:18, marginRight:4}}>{l.emoji}</Text>
-                      <Text style={{color:'#334eb8', fontWeight:'bold'}}>{l.label}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-            {/* Interests & Hobbies */}
-            <View style={{marginBottom:16}}>
-              <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="heart" size={18} color="#334eb8" /> Interests & Hobbies</Text>
-              <View style={{flexDirection:'row', flexWrap:'wrap'}}>
-                {(user.interests||[]).map((hobby, i) => {
-                  const hobbyMap = {
-                    cooking: { label: 'Cooking', emoji: '🍳' },
-                    movies: { label: 'Movies', emoji: '🎬' },
-                    pets: { label: 'Pets', emoji: '🐶' },
-                    sports: { label: 'Sports', emoji: '🏀' },
-                    gardening: { label: 'Gardening', emoji: '🌱' },
-                    music: { label: 'Music', emoji: '🎵' },
-                    photography: { label: 'Photography', emoji: '📷' },
-                    travel: { label: 'Travel', emoji: '✈️' },
-                    art: { label: 'Art', emoji: '🎨' },
-                    reading: { label: 'Reading', emoji: '📚' },
-                    games: { label: 'Games', emoji: '🎮' },
-                    festivities: { label: 'Festivities', emoji: '🎉' },
-                    fitness: { label: 'Fitness', emoji: '🏋️' },
-                  };
-                  const h = hobbyMap[hobby] || { label: hobby, emoji: '🎯' };
-                  return (
-                    <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
-                      <Text style={{fontSize:18, marginRight:4}}>{h.emoji}</Text>
-                      <Text style={{color:'#334eb8', fontWeight:'bold'}}>{h.label}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-            {/* My Preferences */}
-            <View style={{marginBottom:16}}>
-              <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="settings" size={18} color="#334eb8" /> My Preferences</Text>
-              <View style={{flexDirection:'row', flexWrap:'wrap'}}>
-                {(user.preferences||[]).map((pref, i) => {
-                  const prefMap = {
-                    non_smoker: { label: 'Non-smoker', emoji: '🚭' },
-                    no_pets: { label: 'No pets', emoji: '🚫🐾' },
-                    male_only: { label: 'Male only', emoji: '👨' },
-                    female_only: { label: 'Female only', emoji: '👩' },
-                  };
-                  const p = prefMap[pref] || { label: pref, emoji: '⚙️' };
-                  return (
-                    <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
-                      <Text style={{fontSize:18, marginRight:4}}>{p.emoji}</Text>
-                      <Text style={{color:'#334eb8', fontWeight:'bold'}}>{p.label}</Text>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-          </View>
-        )
-      )}
-
-      {/* Edit Profile Modal */}
-      <Modal
-        visible={editModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setEditModalVisible(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.2)" }}
-        >
-          <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, width: "90%", maxWidth: 400 }}>
-            <Text style={{ fontWeight: "bold", fontSize: 20, marginBottom: 12 }}>Edit Profile</Text>
-            {Object.keys(editData).map((key) => (
-              key !== "skills" ? (
-                <View key={key} style={{ marginBottom: 10 }}>
-                  <Text style={{ color: "#888", marginBottom: 2 }}>{key.replace(/_/g, " ")}</Text>
-                  <TextInput
-                    value={editData[key] || ""}
-                    onChangeText={(text) => setEditData((prev) => ({ ...prev, [key]: text }))}
-                    style={{ borderWidth: 1, borderColor: "#eee", borderRadius: 8, padding: 8, fontSize: 16 }}
-                  />
-                </View>
-              ) : (
-                <View key={key} style={{ marginBottom: 10 }}>
-                  <Text style={{ color: "#888", marginBottom: 2 }}>Skills (comma separated)</Text>
-                  <TextInput
-                    value={Array.isArray(editData.skills) ? editData.skills.join(", ") : ""}
-                    onChangeText={(text) => setEditData((prev) => ({ ...prev, skills: text.split(",").map(s => s.trim()).filter(Boolean) }))}
-                    style={{ borderWidth: 1, borderColor: "#eee", borderRadius: 8, padding: 8, fontSize: 16 }}
-                  />
-                </View>
-              )
-            ))}
-            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 16 }}>
-              <TouchableOpacity onPress={() => setEditModalVisible(false)} style={{ marginRight: 16 }}>
-                <Text style={{ color: "#888" }}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => patchUser(editData, () => setEditModalVisible(false))}
-                style={{ backgroundColor: "#334eb8", borderRadius: 8, paddingHorizontal: 18, paddingVertical: 8 }}
-                disabled={saving}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.tabButton,
+                tab === "additional" && { ...styles.tabButtonActive, borderBottomWidth: 2, borderBottomColor: "#f55b5f" },
+              ]}
+              onPress={() => setTab("additional")}
+            >
+              <Text
+                style={[
+                  styles.tabText,
+                  tab === "additional" && styles.tabTextActive,
+                ]}
               >
-                <Text style={{ color: "#fff", fontWeight: "bold" }}>{saving ? "Saving..." : "Save"}</Text>
-              </TouchableOpacity>
-            </View>
+                Additional Details
+              </Text>
+            </TouchableOpacity>
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        </View>
+        {tab === "current" ? (
+          <>
+            <ProfileCard
+              color="#D6D6FF"
+              label="Personal information"
+              values={[
+                <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="name">{iconMap.name}<Text>{user.fname + " " + user.lname}</Text></View>,
+                <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="phone">{iconMap.phone}<Text>{user.phone}</Text></View>,
+                <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="dob">{iconMap.dob}<Text>{user.dob}</Text></View>,
+                <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="gender">{iconMap.gender}<Text>{user.gender}</Text></View>,
+                <View style={{flexDirection:'row', alignItems:'center'}} key="address">{iconMap.address}<Text>{user.address}</Text></View>,
 
-      {/* Edit Bio Modal */}
-      <Modal
-        visible={editBioModalVisible}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setEditBioModalVisible(false)}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.2)" }}
-        >
-          <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, width: "90%", maxWidth: 400 }}>
-            <Text style={{ fontWeight: "bold", fontSize: 20, marginBottom: 12 }}>Edit Bio</Text>
-            <TextInput
-              value={editBio}
-              onChangeText={setEditBio}
-              style={{ borderWidth: 1, borderColor: "#eee", borderRadius: 8, padding: 8, fontSize: 16, minHeight: 60, textAlignVertical: 'top' }}
-              multiline
-              numberOfLines={3}
+              ]}
+              onEdit={() => {
+                setEditData({
+                  fname: user.fname,
+                  lname: user.lname,
+                  phone: user.phone,
+                  dob: user.dob,
+                  gender: user.gender,
+                  address: user.address,
+                });
+                setEditModalVisible(true);
+              }}
             />
-            <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 16 }}>
-              <TouchableOpacity onPress={() => setEditBioModalVisible(false)} style={{ marginRight: 16 }}>
-                <Text style={{ color: "#888" }}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => patchUser({ bio: editBio }, () => setEditBioModalVisible(false))}
-                style={{ backgroundColor: "#334eb8", borderRadius: 8, paddingHorizontal: 18, paddingVertical: 8 }}
-                disabled={saving}
-              >
-                <Text style={{ color: "#fff", fontWeight: "bold" }}>{saving ? "Saving..." : "Save"}</Text>
-              </TouchableOpacity>
+            <ProfileCard
+              color="#A6F7E2"
+              label="Emergency Contact"
+              values={[
+                <View style={{flexDirection:'row', alignItems:'center', paddingBottom:8}} key="emergency">{iconMap.emergency}<Text>{user.emergency_contact}</Text></View>,
+                <View style={{flexDirection:'row', alignItems:'center'}} key="emergency_phone">{iconMap.phone}<Text>{user.emergency_contact_phone}</Text></View>,
+              ]}
+              onEdit={() => {
+                setEditData({
+                  emergency_contact: user.emergency_contact,
+                  emergency_contact_phone: user.emergency_contact_phone,
+                });
+                setEditModalVisible(true);
+              }}
+            />
+            <ProfileCard
+              color="#fff"
+              label="Tax Information"
+              values={[
+                <View style={{flexDirection:'row', alignItems:'center'}} key="tfn">{iconMap.tfn}<Text>{user.tfn === null ? "No TFN provided" : user.tfn}</Text></View>,
+              ]}
+              onEdit={() => {
+                setEditData({ tfn: user.tfn });
+                setEditModalVisible(true);
+              }}
+            />
+            <ProfileCard
+              color="#FFF7C2"
+              label="Skills"
+              values={user.skills && user.skills.length ? user.skills : ["No skills added"]}
+              onEdit={() => {
+                setEditData({ skills: user.skills });
+                setEditModalVisible(true);
+              }}
+            />
+          </>
+        ) : (
+          // --- Additional Details Horizontal Stepper ---
+          isEditingAdditional ? (
+            <HorizontalStepper 
+              user={user} 
+              patchUser={(data) => patchUser(data, () => setIsEditingAdditional(false))} 
+              onDone={()=>setIsEditingAdditional(false)} 
+              onBack={()=>setIsEditingAdditional(false)}
+            />
+          ) : (
+            <View style={{padding:18}}>
+              <View style={{flexDirection:'row', alignItems:'center', marginBottom:12}}>
+                <Text style={{fontWeight:'bold', fontSize:22, flex:1}}>Additional Details</Text>
+                <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{padding:8}}>
+                  <Ionicons name="create-outline" size={22} color="#334eb8" />
+                </TouchableOpacity>
+              </View>
+              {/* Skills 
+              <View style={{flexDirection:'row', flexWrap:'wrap', marginBottom:16}}>
+                {(user.skills||[]).map((skill, i) => (
+                  <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8}}>
+                    <Text style={{color:'#334eb8', fontWeight:'bold'}}>{skill}</Text>
+                  </View>
+                ))}
+              </View>*/}
+              {/* Availability */}
+              <View style={{marginBottom:16}}>
+                <View style={{flexDirection:'row', alignItems:'center'}}>
+                  <Feather name="clock" size={18} color="#334eb8" style={{marginRight:6}} />
+                  <Text style={{fontWeight:'bold', fontSize:18}}>Availability</Text>
+                </View>
+                <Text style={{color:'#888', marginTop:2}}>Support sessions don't need to fill each time slot completely.</Text>
+                <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:8, gap:8}}>
+                  {availabilityObj && Object.keys(availabilityObj).length > 0 ?
+                    Object.entries(availabilityObj)
+                      .filter(([_, value]) => value)
+                      .map(([day, value]) => (
+                        <View
+                          key={day}
+                          style={{
+                            backgroundColor: '#334eb8',
+                            borderRadius: 16,
+                            paddingHorizontal: 14,
+                            paddingVertical: 8,
+                            marginRight: 8,
+                            marginBottom: 8,
+                            minWidth: 80,
+                            alignItems: 'center',
+                          }}
+                        >
+                          <Text style={{
+                            color: '#fff',
+                            fontWeight: 'bold',
+                            fontSize: 15,
+                            textTransform: 'capitalize',
+                          }}>{day}</Text>
+                        </View>
+                      ))
+                  : (
+                    <Text style={{color:'#bbb', fontStyle:'italic'}}>No availability set.</Text>
+                  )}
+                </View>
+              </View>
+              {/* Indicative rates */}
+              <View style={{marginBottom:16}}>
+                <View style={{flexDirection:'row', alignItems:'center'}}>
+                  <Feather name="dollar-sign" size={18} color="#334eb8" style={{marginRight:6}} />
+                  <Text style={{fontWeight:'bold', fontSize:18}}>Indicative rates</Text>
+                  {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
+                    <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
+                  </TouchableOpacity> */}
+                </View>
+                <Text style={{marginTop:2}}>{user.indicative_rate ? user.indicative_rate : 'Not set'}</Text>
+                <View style={{backgroundColor:'#e6edff', borderRadius:8, padding:10, marginTop:10}}>
+                  <Text style={{fontWeight:'bold', color:'#334eb8'}}>Disabled</Text>
+                  <Text style={{marginTop:4, color:'#444'}}>This section is currently disabled</Text>
+                </View>
+              </View>
+              {/* Badges */}
+              <View style={{marginBottom:16}}>
+                <View style={{flexDirection:'row', alignItems:'center'}}>
+                  <Feather name="star" size={18} color="#334eb8" style={{marginRight:6}} />
+                  <Text style={{fontWeight:'bold', fontSize:18}}>Badges</Text>
+                  {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
+                    <Text style={{color:'#334eb8', fontWeight:'bold'>Edit</Text>
+                  </TouchableOpacity> */}
+                </View>
+                <View style={{flexDirection:'row', flexWrap:'wrap', marginTop:6}}>
+                  {(user.badges||[]).map((badge, i) => {
+                    const badgeMap = {
+                      lgbtq: { label: 'LGBTQIA+ Friendly', emoji: '🏳️‍🌈' },
+                      non_smoker: { label: 'Non-Smoker', emoji: '🚭' },
+                      pet_friendly: { label: 'Pet Friendly', emoji: '🐾' },
+                    };
+                    const b = badgeMap[badge] || { label: badge, emoji: '' };
+                    return (
+                      <View key={i} style={{backgroundColor:'#f7f8fa', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
+                        <Text style={{fontSize:18, marginRight:4}}>{b.emoji}</Text>
+                        <Text style={{color:'#334eb8', fontWeight:'bold'}}>{b.label}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+              {/* Vaccinations */}
+              <View style={{marginBottom:16}}>
+                <View style={{flexDirection:'row', alignItems:'center'}}>
+                  <Feather name="shield" size={18} color="#334eb8" style={{marginRight:6}} />
+                  <Text style={{fontWeight:'bold', fontSize:18}}>Vaccinations</Text>
+                  {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
+                    <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
+                  </TouchableOpacity> */}
+                </View>
+                <View style={{marginTop:6}}>
+                  {(user.vaccinations||[]).map((v, i) => {
+                    const vacMap = {
+                      covid_19: { label: 'COVID-19 vaccine', emoji: '💉' },
+                      flu: { label: 'Seasonal flu vaccine', emoji: '🤧' },
+                      tetanus: { label: 'Tetanus vaccine', emoji: '🩹' },
+                    };
+                    const vObj = vacMap[v] || { label: v, emoji: '' };
+                    return (
+                      <Text key={i} style={{marginBottom:2}}>{vObj.emoji} {vObj.label} - <Text style={{color:'#888'}}>Self declared</Text></Text>
+                    );
+                  })}
+                </View>
+              </View>
+              {/* Services Provided */}
+              <View style={{marginBottom:16}}>
+                <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="briefcase" size={18} color="#334eb8" /> Services Provided</Text>
+                <View style={{flexDirection:'row', flexWrap:'wrap'}}>
+                  {(user.services||[]).map((s, i) => {
+                    const serviceMap = {
+                      everyday: 'Everyday Activities Support',
+                      self_care: 'Self-Care Assistance',
+                      nursing: 'Skilled Nursing Care',
+                      healthcare: 'Allied Health Services',
+                    };
+                    return (
+                      <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8}}>
+                        <Text style={{color:'#334eb8', fontWeight:'bold'}}>{serviceMap[s] || s}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+              {/* Languages */}
+              <View style={{marginBottom:16}}>
+                <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="globe" size={18} color="#334eb8" /> Languages</Text>
+                <View style={{flexDirection:'row', flexWrap:'wrap'}}>
+                  {(user.languages||[]).map((lang, i) => {
+                    const langMap = {
+                      english: { label: 'English', emoji: '🇬🇧' },
+                      spanish: { label: 'Spanish', emoji: '🇪🇸' },
+                      french: { label: 'French', emoji: '🇫🇷' },
+                      german: { label: 'German', emoji: '🇩🇪' },
+                      chinese: { label: 'Chinese', emoji: '🇨🇳' },
+                      other: { label: 'Other', emoji: '🌐' },
+                    };
+                    const l = langMap[lang] || { label: lang, emoji: '🌐' };
+                    return (
+                      <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
+                        <Text style={{fontSize:18, marginRight:4}}>{l.emoji}</Text>
+                        <Text style={{color:'#334eb8', fontWeight:'bold'}}>{l.label}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+              {/* Interests & Hobbies */}
+              <View style={{marginBottom:16}}>
+                <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="heart" size={18} color="#334eb8" /> Interests & Hobbies</Text>
+                <View style={{flexDirection:'row', flexWrap:'wrap'}}>
+                  {(user.interests||[]).map((hobby, i) => {
+                    const hobbyMap = {
+                      cooking: { label: 'Cooking', emoji: '🍳' },
+                      movies: { label: 'Movies', emoji: '🎬' },
+                      pets: { label: 'Pets', emoji: '🐶' },
+                      sports: { label: 'Sports', emoji: '🏀' },
+                      gardening: { label: 'Gardening', emoji: '🌱' },
+                      music: { label: 'Music', emoji: '🎵' },
+                      photography: { label: 'Photography', emoji: '📷' },
+                      travel: { label: 'Travel', emoji: '✈️' },
+                      art: { label: 'Art', emoji: '🎨' },
+                      reading: { label: 'Reading', emoji: '📚' },
+                      games: { label: 'Games', emoji: '🎮' },
+                      festivities: { label: 'Festivities', emoji: '🎉' },
+                      fitness: { label: 'Fitness', emoji: '🏋️' },
+                    };
+                    const h = hobbyMap[hobby] || { label: hobby, emoji: '🎯' };
+                    return (
+                      <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
+                        <Text style={{fontSize:18, marginRight:4}}>{h.emoji}</Text>
+                        <Text style={{color:'#334eb8', fontWeight:'bold'}}>{h.label}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+              {/* My Preferences */}
+              <View style={{marginBottom:16}}>
+                <Text style={{fontWeight:'bold', fontSize:18, marginBottom:6}}><Feather name="settings" size={18} color="#334eb8" /> My Preferences</Text>
+                <View style={{flexDirection:'row', flexWrap:'wrap'}}>
+                  {(user.preferences||[]).map((pref, i) => {
+                    const prefMap = {
+                      non_smoker: { label: 'Non-smoker', emoji: '🚭' },
+                      no_pets: { label: 'No pets', emoji: '🚫🐾' },
+                      male_only: { label: 'Male only', emoji: '👨' },
+                      female_only: { label: 'Female only', emoji: '👩' },
+                    };
+                    const p = prefMap[pref] || { label: pref, emoji: '⚙️' };
+                    return (
+                      <View key={i} style={{backgroundColor:'#e6edff', borderRadius:16, paddingHorizontal:14, paddingVertical:6, marginRight:8, marginBottom:8, flexDirection:'row', alignItems:'center'}}>
+                        <Text style={{fontSize:18, marginRight:4}}>{p.emoji}</Text>
+                        <Text style={{color:'#334eb8', fontWeight:'bold'}}>{p.label}</Text>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-    </ScrollView>
+          )
+        )}
+
+        {/* Edit Profile Modal */}
+        <Modal
+          visible={editModalVisible}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setEditModalVisible(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.2)" }}
+          >
+            <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, width: "90%", maxWidth: 400 }}>
+              <Text style={{ fontWeight: "bold", fontSize: 20, marginBottom: 12 }}>Edit Profile</Text>
+              {Object.keys(editData).map((key) => (
+                key !== "skills" ? (
+                  <View key={key} style={{ marginBottom: 10 }}>
+                    <Text style={{ color: "#888", marginBottom: 2 }}>{key.replace(/_/g, " ")}</Text>
+                    <TextInput
+                      value={editData[key] || ""}
+                      onChangeText={(text) => setEditData((prev) => ({ ...prev, [key]: text }))}
+                      style={{ borderWidth: 1, borderColor: "#eee", borderRadius: 8, padding: 8, fontSize: 16 }}
+                    />
+                  </View>
+                ) : (
+                  <View key={key} style={{ marginBottom: 10 }}>
+                    <Text style={{ color: "#888", marginBottom: 2 }}>Skills (comma separated)</Text>
+                    <TextInput
+                      value={Array.isArray(editData.skills) ? editData.skills.join(", ") : ""}
+                      onChangeText={(text) => setEditData((prev) => ({ ...prev, skills: text.split(",").map(s => s.trim()).filter(Boolean) }))}
+                      style={{ borderWidth: 1, borderColor: "#eee", borderRadius: 8, padding: 8, fontSize: 16 }}
+                    />
+                  </View>
+                )
+              ))}
+              <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 16 }}>
+                <TouchableOpacity onPress={() => setEditModalVisible(false)} style={{ marginRight: 16 }}>
+                  <Text style={{ color: "#888" }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => patchUser(editData, () => setEditModalVisible(false))}
+                  style={{ backgroundColor: "#334eb8", borderRadius: 8, paddingHorizontal: 18, paddingVertical: 8 }}
+                  disabled={saving}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "bold" }}>{saving ? "Saving..." : "Save"}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* Edit Bio Modal */}
+        <Modal
+          visible={editBioModalVisible}
+          animationType="fade"
+          transparent={true}
+          onRequestClose={() => setEditBioModalVisible(false)}
+        >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+            style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: "rgba(0,0,0,0.2)" }}
+          >
+            <View style={{ backgroundColor: "#fff", borderRadius: 16, padding: 24, width: "90%", maxWidth: 400 }}>
+              <Text style={{ fontWeight: "bold", fontSize: 20, marginBottom: 12 }}>Edit Bio</Text>
+              <TextInput
+                value={editBio}
+                onChangeText={setEditBio}
+                style={{ borderWidth: 1, borderColor: "#eee", borderRadius: 8, padding: 8, fontSize: 16, minHeight: 60, textAlignVertical: 'top' }}
+                multiline
+                numberOfLines={3}
+              />
+              <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: 16 }}>
+                <TouchableOpacity onPress={() => setEditBioModalVisible(false)} style={{ marginRight: 16 }}>
+                  <Text style={{ color: "#888" }}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => patchUser({ bio: editBio }, () => setEditBioModalVisible(false))}
+                  style={{ backgroundColor: "#334eb8", borderRadius: 8, paddingHorizontal: 18, paddingVertical: 8 }}
+                  disabled={saving}
+                >
+                  <Text style={{ color: "#fff", fontWeight: "bold" }}>{saving ? "Saving..." : "Save"}</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+      </ScrollView>
+      {/* Fixed Bottom Navbar */}
+    </View>
   );
 };
 
@@ -601,15 +800,16 @@ const HorizontalStepper = ({ user, patchUser, onDone, onBack }) => {
   const [detailsData, setDetailsData] = useState(() => ({
     bank: user.bank || {},
     badges: user.badges || [],
-    vaccination: user.vaccinations || [],
+    vaccinations: user.vaccinations || [],
     rate: user.indicative_rate || '',
     languages: user.languages || [],
     interests: user.interests || [],
     services: user.services || [],
     preferences: user.preferences || [],
   }));
+  // Availability as boolean object for each day
   const [availabilityObj, setAvailabilityObj] = useState(() => {
-    // If user.availability is an array, convert to object; else use as is
+    // If user.availability is an object, use as is; if array, convert to object
     if (user.availability && !Array.isArray(user.availability)) return user.availability;
     if (user.availability && Array.isArray(user.availability)) {
       const days = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"];
@@ -645,7 +845,7 @@ const HorizontalStepper = ({ user, patchUser, onDone, onBack }) => {
       // At least one day must be true
       return Object.values(availabilityObj || {}).some(Boolean);
     }
-    const val = detailsData[s.key];
+    const val = s.key === 'vaccination' ? detailsData['vaccinations'] : detailsData[s.key];
     if (Array.isArray(val)) return val.length > 0;
     if (typeof val === 'object') return Object.keys(val||{}).length > 0;
     return !!val;
@@ -738,10 +938,10 @@ const HorizontalStepper = ({ user, patchUser, onDone, onBack }) => {
             </View>
           </View>
         )}
-        {/* Vaccination */}
+        {/* Vaccinations */}
         {stepIndex===3 && (
           <View>
-            <Text style={{fontWeight:'bold', fontSize:20, marginBottom:12}}><Feather name="shield" size={20} color="#334eb8" /> Vaccination</Text>
+            <Text style={{fontWeight:'bold', fontSize:20, marginBottom:12}}><Feather name="shield" size={20} color="#334eb8" /> Vaccinations</Text>
             <View style={{flexDirection:'row', flexWrap:'wrap', gap:12}}>
               {[
                 {key:'covid_19', label:'COVID-19 Vaccine', emoji:'💉'},
@@ -750,8 +950,8 @@ const HorizontalStepper = ({ user, patchUser, onDone, onBack }) => {
               ].map(vac => (
                 <TouchableOpacity
                   key={vac.key}
-                  style={{borderWidth:1, borderColor: detailsData.vaccination?.includes(vac.key)?'#334eb8':'#eee', borderRadius:12, padding:18, margin:6, backgroundColor: detailsData.vaccination?.includes(vac.key)?'#e6edff':'#fff', alignItems:'center', minWidth:130}}
-                  onPress={()=>setDetailsData(prev=>({...prev, vaccination: prev.vaccination?.includes(vac.key)?prev.vaccination.filter(v=>v!==vac.key):[...(prev.vaccination||[]),vac.key]}))}
+                  style={{borderWidth:1, borderColor: detailsData.vaccinations?.includes(vac.key)?'#334eb8':'#eee', borderRadius:12, padding:18, margin:6, backgroundColor: detailsData.vaccinations?.includes(vac.key)?'#e6edff':'#fff', alignItems:'center', minWidth:130}}
+                  onPress={()=>setDetailsData(prev=>({...prev, vaccinations: prev.vaccinations?.includes(vac.key)?prev.vaccinations.filter(v=>v!==vac.key):[...(prev.vaccinations||[]),vac.key]}))}
                 >
                   <Text style={{fontSize:28}}>{vac.emoji}</Text>
                   <Text style={{fontWeight:'bold', color:'#222', fontSize:16, marginTop:6}}>{vac.label}</Text>
@@ -889,8 +1089,17 @@ const HorizontalStepper = ({ user, patchUser, onDone, onBack }) => {
             <TouchableOpacity
               onPress={async ()=>{
                 if (canSave) {
-                  await patchUser(detailsData, ()=>{});
-                  await patchAvailability(availabilityObj, onDone);
+                  await patchUser({...detailsData, vaccinations: detailsData.vaccinations}, ()=>{onDone && onDone();});
+                  // PATCH availability as boolean object
+                  await patchAvailability(availabilityObj, async () => {
+                    // After save, GET latest availability
+                    const getRes = await fetch(AVAILABILITY_URL, {
+                      headers: { Authorization: `Bearer ${user.access_token || ''}` },
+                    });
+                    const data = getRes.ok ? await getRes.json() : null;
+                    setAvailabilityObj(data?.availability || availabilityObj);
+                    onDone && onDone();
+                  });
                 }
               }}
               style={{backgroundColor:canSave?'#34c759':'#ccc', borderRadius:8, paddingHorizontal:18, paddingVertical:8}} disabled={!canSave}>
