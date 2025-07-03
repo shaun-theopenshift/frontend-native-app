@@ -12,7 +12,9 @@ import React, { useEffect, useState } from "react";
 import {
   Alert,
   Image,
-  KeyboardAvoidingView, Linking, Modal,
+  KeyboardAvoidingView,
+  Linking,
+  Modal,
   Platform,
   ScrollView,
   StyleSheet,
@@ -20,7 +22,7 @@ import {
   TextInput,
   ToastAndroid,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 
 const API_URL = "https://api.theopenshift.com/v1/users/me";
@@ -157,91 +159,41 @@ const customTick = (
 
 //Stripe Onboarding Section
 const StripeOnboardingSection = ({ user, accessToken }) => {
-    const [loading, setLoading] = React.useState(false);
-    const [error, setError] = React.useState("");
-    const [onboardLink, setOnboardLink] = React.useState("");
-    const [dashboardLink, setDashboardLink] = React.useState("");
-    const [chargesEnabled, setChargesEnabled] = React.useState(
-      user?.charges_enabled || false
-    );
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState("");
+  const [onboardLink, setOnboardLink] = React.useState("");
+  const [dashboardLink, setDashboardLink] = React.useState("");
+  const [chargesEnabled, setChargesEnabled] = React.useState(
+    user?.charges_enabled || false
+  );
 
-    // Refresh charges_enabled when user changes (e.g. after returning from onboarding)
-    React.useEffect(() => {
-      setChargesEnabled(user?.charges_enabled || false);
-    }, [user]);
+  // Refresh charges_enabled when user changes (e.g. after returning from onboarding)
+  React.useEffect(() => {
+    setChargesEnabled(user?.charges_enabled || false);
+  }, [user]);
 
-    const fetchOnboardLink = async () => {
-      setLoading(true);
-      setError("");
-      try {
-        const res = await fetch(
-          "https://api.theopenshift.com/v1/payments/onboard",
-          {
-            headers: { Authorization: `Bearer ${accessToken || ""}` },
-          }
-        );
-        const data = await res.text();
-        console.log("Stripe onboarding API response:", data); 
-        if (!res.ok || !data)
-          throw new Error(data?.message || "Could not fetch onboarding link");
-        setOnboardLink(data.trim());
-      } catch (e) {
-        setError(e.message || "Failed to fetch onboarding link");
-      }
-      setLoading(false);
-    };
+  const fetchOnboardLink = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch(
+        "https://api.theopenshift.com/v1/payments/onboard",
+        {
+          headers: { Authorization: `Bearer ${accessToken || ""}` },
+        }
+      );
+      const data = await res.text();
+      console.log("Stripe onboarding API response:", data);
+      if (!res.ok || !data)
+        throw new Error(data?.message || "Could not fetch onboarding link");
+      setOnboardLink(data.trim());
+    } catch (e) {
+      setError(e.message || "Failed to fetch onboarding link");
+    }
+    setLoading(false);
+  };
 
-    const fetchDashboardLink = async () => {
-  setLoading(true);
-  setError("");
-  try {
-    const res = await fetch(
-      "https://api.theopenshift.com/v1/payments/dashboard",
-      {
-        headers: { Authorization: `Bearer ${accessToken || ""}` },
-      }
-    );
-    const data = await res.text();
-    if (!res.ok || !data)
-      throw new Error("Could not fetch dashboard link");
-    setDashboardLink(data.trim().replace(/^"+|"+$/g, '')); // Clean the link
-  } catch (e) {
-    setError(e.message || "Failed to fetch dashboard link");
-  }
-  setLoading(false);
-};
-
-    if (chargesEnabled) {
-      return (
-        <View>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              marginBottom: 10,
-            }}
-          >
-            <AntDesign
-              name="checkcircle"
-              size={22}
-              color="#34c759"
-              style={{ marginRight: 8 }}
-            />
-            <Text
-              style={{ color: "#34c759", fontWeight: "bold", fontSize: 16 }}
-            >
-              Your Stripe account is enabled for payouts!
-            </Text>
-          </View>
-          <TouchableOpacity
-  style={{
-    backgroundColor: "#334eb8",
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 10,
-    alignItems: "center",
-  }}
-  onPress={async () => {
+  const fetchDashboardLink = async () => {
     setLoading(true);
     setError("");
     try {
@@ -252,87 +204,134 @@ const StripeOnboardingSection = ({ user, accessToken }) => {
         }
       );
       const data = await res.text();
-      if (!res.ok || !data)
-        throw new Error("Could not fetch dashboard link");
-      const url = data.trim().replace(/^"+|"+$/g, '');
-      setDashboardLink(url);
-      const supported = await Linking.canOpenURL(url);
-      if (supported || url.startsWith("http")) {
-        await Linking.openURL(url);
-      } else {
-        setError("Cannot open this link on your device.");
-      }
+      if (!res.ok || !data) throw new Error("Could not fetch dashboard link");
+      setDashboardLink(data.trim().replace(/^"+|"+$/g, "")); // Clean the link
     } catch (e) {
-      setError("Could not open dashboard link.");
+      setError(e.message || "Failed to fetch dashboard link");
     }
     setLoading(false);
-  }}
->
-  <Text style={{ color: "#fff", fontWeight: "bold" }}>
-    Open Stripe Dashboard
-  </Text>
-</TouchableOpacity>
-          {error ? (
-            <Text style={{ color: "#e53935", marginTop: 8 }}>{error}</Text>
-          ) : null}
-        </View>
-      );
-    }
+  };
 
+  if (chargesEnabled) {
     return (
       <View>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            marginBottom: 10,
+          }}
+        >
+          <AntDesign
+            name="checkcircle"
+            size={22}
+            color="#34c759"
+            style={{ marginRight: 8 }}
+          />
+          <Text style={{ color: "#34c759", fontWeight: "bold", fontSize: 16 }}>
+            Your Stripe account is enabled for payouts!
+          </Text>
+        </View>
         <TouchableOpacity
           style={{
             backgroundColor: "#334eb8",
             borderRadius: 8,
             padding: 12,
+            marginTop: 10,
             alignItems: "center",
-            marginBottom: 10,
           }}
-          onPress={fetchOnboardLink}
-          disabled={loading}
+          onPress={async () => {
+            setLoading(true);
+            setError("");
+            try {
+              const res = await fetch(
+                "https://api.theopenshift.com/v1/payments/dashboard",
+                {
+                  headers: { Authorization: `Bearer ${accessToken || ""}` },
+                }
+              );
+              const data = await res.text();
+              if (!res.ok || !data)
+                throw new Error("Could not fetch dashboard link");
+              const url = data.trim().replace(/^"+|"+$/g, "");
+              setDashboardLink(url);
+              const supported = await Linking.canOpenURL(url);
+              if (supported || url.startsWith("http")) {
+                await Linking.openURL(url);
+              } else {
+                setError("Cannot open this link on your device.");
+              }
+            } catch (e) {
+              setError("Could not open dashboard link.");
+            }
+            setLoading(false);
+          }}
         >
           <Text style={{ color: "#fff", fontWeight: "bold" }}>
-            Get Onboarding Link
+            Open Stripe Dashboard
           </Text>
         </TouchableOpacity>
-        {onboardLink ? (
-          <TouchableOpacity
-            style={{
-              backgroundColor: "#5167FC",
-              borderRadius: 8,
-              padding: 12,
-              alignItems: "center",
-              marginBottom: 10,
-            }}
-            onPress={async () => {
-  try {
-    const url = onboardLink.trim().replace(/^"+|"+$/g, '');
-    console.log("Opening Stripe onboarding link:", url);
-    const supported = await Linking.canOpenURL(url);
-    console.log("canOpenURL result:", supported);
-    if (supported) {
-      await Linking.openURL(url);
-    } else {
-      setError("Cannot open this link on your device.");
-    }
-  } catch (e) {
-    setError("Could not open onboarding link.");
-    console.log("Error opening onboarding link:", e);
-  }
-}}
-          >
-            <Text style={{ color: "#fff", fontWeight: "bold" }}>
-              Start Onboarding
-            </Text>
-          </TouchableOpacity>
-        ) : null}
         {error ? (
           <Text style={{ color: "#e53935", marginTop: 8 }}>{error}</Text>
         ) : null}
       </View>
     );
-  };
+  }
+
+  return (
+    <View>
+      <TouchableOpacity
+        style={{
+          backgroundColor: "#334eb8",
+          borderRadius: 8,
+          padding: 12,
+          alignItems: "center",
+          marginBottom: 10,
+        }}
+        onPress={fetchOnboardLink}
+        disabled={loading}
+      >
+        <Text style={{ color: "#fff", fontWeight: "bold" }}>
+          Get Onboarding Link
+        </Text>
+      </TouchableOpacity>
+      {onboardLink ? (
+        <TouchableOpacity
+          style={{
+            backgroundColor: "#5167FC",
+            borderRadius: 8,
+            padding: 12,
+            alignItems: "center",
+            marginBottom: 10,
+          }}
+          onPress={async () => {
+            try {
+              const url = onboardLink.trim().replace(/^"+|"+$/g, "");
+              console.log("Opening Stripe onboarding link:", url);
+              const supported = await Linking.canOpenURL(url);
+              console.log("canOpenURL result:", supported);
+              if (supported) {
+                await Linking.openURL(url);
+              } else {
+                setError("Cannot open this link on your device.");
+              }
+            } catch (e) {
+              setError("Could not open onboarding link.");
+              console.log("Error opening onboarding link:", e);
+            }
+          }}
+        >
+          <Text style={{ color: "#fff", fontWeight: "bold" }}>
+            Start Onboarding
+          </Text>
+        </TouchableOpacity>
+      ) : null}
+      {error ? (
+        <Text style={{ color: "#e53935", marginTop: 8 }}>{error}</Text>
+      ) : null}
+    </View>
+  );
+};
 
 const ProfileScreen = ({ route = {}, navigation }) => {
   const params = route.params || {};
@@ -959,7 +958,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
             }
             onDone={() => setIsEditingAdditional(false)}
             onBack={() => setIsEditingAdditional(false)}
-            accessToken={ accessToken}
+            accessToken={accessToken}
           />
         ) : (
           <View style={{ padding: 18 }}>
@@ -1499,7 +1498,13 @@ const ProfileScreen = ({ route = {}, navigation }) => {
 };
 
 // --- Additional Details Horizontal Stepper ---
-const HorizontalStepper = ({ user, patchUser, onDone, onBack, accessToken }) => {
+const HorizontalStepper = ({
+  user,
+  patchUser,
+  onDone,
+  onBack,
+  accessToken,
+}) => {
   const [stepIndex, setStepIndex] = useState(0);
   // Always initialize detailsData and availabilityObj from user prop
   const [detailsData, setDetailsData] = useState(() => ({

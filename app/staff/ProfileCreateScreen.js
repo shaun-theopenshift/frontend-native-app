@@ -3,6 +3,7 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import { useNavigation } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import * as SecureStore from "expo-secure-store";
+import { AsYouType, parsePhoneNumberFromString } from "libphonenumber-js";
 import React, { useEffect, useState } from "react";
 import {
   Alert,
@@ -14,7 +15,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  View
+  View,
 } from "react-native";
 import {
   AU_STATES_SUBURBS,
@@ -60,8 +61,10 @@ const ProfileCreateScreen = ({ route }) => {
     emergency_contact: "",
     emergency_contact_phone: "",
     tfn: "",
-    role: "user",
   });
+  //
+  const [errors, setErrors] = useState({});
+  //
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [skillInput, setSkillInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -88,7 +91,40 @@ const ProfileCreateScreen = ({ route }) => {
     navigation.reset({ index: 0, routes: [{ name: "Splash" }] });
   };
 
+  const validateStep = () => {
+    let stepErrors = {};
+    if (step === 1) {
+      if (!form.fname.trim()) stepErrors.fname = "First name is required";
+      if (!form.lname.trim()) stepErrors.lname = "Last name is required";
+      if (!form.about.trim()) stepErrors.about = "Bio is required";
+    }
+    if (step === 2) {
+      if (!form.address.trim()) stepErrors.address = "Address is required";
+      if (!form.state.trim()) stepErrors.state = "State is required";
+      if (!form.suburb.trim()) stepErrors.suburb = "Suburb is required";
+    }
+    if (step === 3) {
+      if (!form.dob.trim()) stepErrors.dob = "Date of birth is required";
+      if (!form.gender.trim()) stepErrors.gender = "Gender is required";
+      if (!form.phone.trim()) stepErrors.phone = "Phone number is required";
+    }
+    if (step === 4) {
+      if (!form.skills.length)
+        stepErrors.skills = "At least one skill is required";
+    }
+    if (step === 5) {
+      if (!form.emergency_contact.trim())
+        stepErrors.emergency_contact = "Emergency contact name is required";
+      if (!form.emergency_contact_phone.trim())
+        stepErrors.emergency_contact_phone =
+          "Emergency contact phone is required";
+    }
+    setErrors(stepErrors);
+    return Object.keys(stepErrors).length === 0;
+  };
+
   const handleNext = () => {
+    if (!validateStep()) return; // Prevent next if errors
     Animated.timing(anim, {
       toValue: step + 1,
       duration: 350,
@@ -110,8 +146,18 @@ const ProfileCreateScreen = ({ route }) => {
     }
   };
 
+  const formatPhone = (number) => {
+    const phoneNumber = parsePhoneNumberFromString(number, "AU");
+    return phoneNumber && phoneNumber.isValid() ? phoneNumber.number : "";
+  };
+
   const handleSubmit = async () => {
     setLoading(true);
+
+     if (!validateStep()) {
+    setLoading(false);
+    return;
+  }
     // Always get the latest access token: prefer route param, then SecureStore
     let latestToken = accessToken;
     if (!latestToken && route?.params?.access_token) {
@@ -136,10 +182,11 @@ const ProfileCreateScreen = ({ route }) => {
       suburb: form.suburb || null,
       dob: form.dob || null,
       gender: genderValue,
-      phone: form.phone || null,
+      phone: formatPhone(form.phone) || null,
       bio: form.about || null,
       emergency_contact: form.emergency_contact || null,
-      emergency_contact_phone: form.emergency_contact_phone || null,
+      emergency_contact_phone:
+        formatPhone(form.emergency_contact_phone) || null,
       skills: form.skills || [],
       badges: [],
       vaccinations: [],
@@ -153,13 +200,22 @@ const ProfileCreateScreen = ({ route }) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${latestToken}`,
+          Authorization: `Bearer ${latestToken}`,
         },
         body: JSON.stringify(payload),
       });
       if (res.ok) {
         Alert.alert("Success", "Profile created successfully!", [
-          { text: "OK", onPress: () => navigation.reset({ index: 0, routes: [{ name: "Profile", params: { access_token: latestToken } }] }) }
+          {
+            text: "OK",
+            onPress: () =>
+              navigation.reset({
+                index: 0,
+                routes: [
+                  { name: "Profile", params: { access_token: latestToken } },
+                ],
+              }),
+          },
         ]);
       } else {
         const errorText = await res.text();
@@ -277,18 +333,27 @@ const ProfileCreateScreen = ({ route }) => {
               onChangeText={(v) => setForm((f) => ({ ...f, about: v }))}
               multiline
             />
+            {errors.about && (
+              <Text style={{ color: "red" }}>{errors.about}</Text>
+            )}
             <TextInput
               style={styles.input}
               placeholder="First Name"
               value={form.fname}
               onChangeText={(v) => setForm((f) => ({ ...f, fname: v }))}
             />
+            {errors.fname && (
+              <Text style={{ color: "red" }}>{errors.fname}</Text>
+            )}
             <TextInput
               style={styles.input}
               placeholder="Last Name"
               value={form.lname}
               onChangeText={(v) => setForm((f) => ({ ...f, lname: v }))}
             />
+            {errors.lname && (
+              <Text style={{ color: "red" }}>{errors.lname}</Text>
+            )}
             <LottieView
               source={require("../../assets/lotties/personal_info_lottie.json")}
               autoPlay
@@ -321,6 +386,9 @@ const ProfileCreateScreen = ({ route }) => {
               }}
               style={{ marginBottom: 12 }}
             />
+            {errors.address && (
+              <Text style={{ color: "red" }}>{errors.address}</Text>
+            )}
             <Text style={styles.label}>State</Text>
             <ScrollView
               horizontal
@@ -346,6 +414,9 @@ const ProfileCreateScreen = ({ route }) => {
                 </TouchableOpacity>
               ))}
             </ScrollView>
+            {errors.state && (
+              <Text style={{ color: "red" }}>{errors.state}</Text>
+            )}
             {form.state ? (
               <>
                 <Text style={styles.label}>Suburb</Text>
@@ -373,6 +444,9 @@ const ProfileCreateScreen = ({ route }) => {
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
+                {errors.suburb && (
+                  <Text style={{ color: "red" }}>{errors.suburb}</Text>
+                )}
                 <LottieView
                   source={require("../../assets/lotties/address_lottie.json")}
                   autoPlay
@@ -416,6 +490,7 @@ const ProfileCreateScreen = ({ route }) => {
                 maximumDate={new Date()}
               />
             )}
+            {errors.dob && <Text style={{ color: "red" }}>{errors.dob}</Text>}
             <Text style={styles.label}>Gender</Text>
             <ScrollView
               horizontal
@@ -441,6 +516,9 @@ const ProfileCreateScreen = ({ route }) => {
                 </TouchableOpacity>
               ))}
             </ScrollView>
+            {errors.gender && (
+              <Text style={{ color: "red" }}>{errors.gender}</Text>
+            )}
             <Text style={styles.label}>Phone Number</Text>
             <View style={{ flexDirection: "row", alignItems: "center" }}>
               <Image
@@ -452,27 +530,47 @@ const ProfileCreateScreen = ({ route }) => {
                   borderRadius: 4,
                 }}
               />
-              <Text style={{ fontSize: 16, marginRight: 4 }}>+61</Text>
               <TextInput
                 style={[styles.input, { flex: 1, marginBottom: 0 }]}
                 placeholder="Phone Number"
                 value={form.phone}
-                onChangeText={(v) => setForm((f) => ({ ...f, phone: v }))}
+                onChangeText={(v) => {
+                  const formatted = new AsYouType("AU").input(
+                    v.replace(/\D/g, "")
+                  );
+                  setForm((f) => ({ ...f, phone: formatted }));
+
+                  // Live validation
+                  const phoneNumber = parsePhoneNumberFromString(
+                    formatted,
+                    "AU"
+                  );
+                  if (!phoneNumber || !phoneNumber.isValid()) {
+                    setErrors((e) => ({
+                      ...e,
+                      phone: "Enter a valid Australian phone number",
+                    }));
+                  } else {
+                    setErrors((e) => ({ ...e, phone: undefined }));
+                  }
+                }}
                 keyboardType="phone-pad"
               />
             </View>
+            {errors.phone && (
+              <Text style={{ color: "red" }}>{errors.phone}</Text>
+            )}
             <LottieView
-                  source={require("../../assets/lotties/your_details.json")}
-                  autoPlay
-                  loop
-                  style={{
-                    width: 300,
-                    height: 300,
-                    alignSelf: "center",
-                    marginTop: 50,
-                  }}
-                />
-            
+              source={require("../../assets/lotties/your_details.json")}
+              autoPlay
+              loop
+              style={{
+                width: 300,
+                height: 300,
+                alignSelf: "center",
+                marginTop: 50,
+              }}
+            />
           </>
         )}
         {step === 4 && (
@@ -503,17 +601,20 @@ const ProfileCreateScreen = ({ route }) => {
                 </View>
               ))}
             </View>
+            {errors.skills && (
+              <Text style={{ color: "red" }}>{errors.skills}</Text>
+            )}
             <LottieView
-                  source={require("../../assets/lotties/skills_lottie.json")}
-                  autoPlay
-                  loop
-                  style={{
-                    width: 350,
-                    height: 350,
-                    alignSelf: "center",
-                    marginTop: 150,
-                  }}
-                />
+              source={require("../../assets/lotties/skills_lottie.json")}
+              autoPlay
+              loop
+              style={{
+                width: 350,
+                height: 350,
+                alignSelf: "center",
+                marginTop: 150,
+              }}
+            />
           </>
         )}
         {step === 5 && (
@@ -528,8 +629,11 @@ const ProfileCreateScreen = ({ route }) => {
                 setForm((f) => ({ ...f, emergency_contact: v }))
               }
             />
+            {errors.emergency_contact && (
+              <Text style={{ color: "red" }}>{errors.emergency_contact}</Text>
+            )}
             <Text style={styles.label}>Phone Number</Text>
-            <View style={{ flexDirection: "row", alignItems: "center"}}>
+            <View style={{ flexDirection: "row", alignItems: "center" }}>
               <Image
                 source={auFlag}
                 style={{
@@ -539,28 +643,54 @@ const ProfileCreateScreen = ({ route }) => {
                   borderRadius: 4,
                 }}
               />
-              <Text style={{ fontSize: 16, marginRight: 4 }}>+61</Text>
               <TextInput
                 style={[styles.input, { flex: 1, marginBottom: 0 }]}
                 placeholder="Emergency Contact Phone"
                 value={form.emergency_contact_phone}
-                onChangeText={(v) =>
-                  setForm((f) => ({ ...f, emergency_contact_phone: v }))
-                }
+                onChangeText={(v) => {
+                  const formatted = new AsYouType("AU").input(
+                    v.replace(/\D/g, "")
+                  );
+                  setForm((f) => ({
+                    ...f,
+                    emergency_contact_phone: formatted,
+                  }));
+
+                  // Live validation
+                  const phoneNumber = parsePhoneNumberFromString(
+                    formatted,
+                    "AU"
+                  );
+                  if (!phoneNumber || !phoneNumber.isValid()) {
+                    setErrors((e) => ({
+                      ...e,
+                      emergency_contact_phone:
+                        "Enter a valid Australian phone number",
+                    }));
+                  } else {
+                    setErrors((e) => ({
+                      ...e,
+                      emergency_contact_phone: undefined,
+                    }));
+                  }
+                }}
                 keyboardType="phone-pad"
               />
             </View>
+                          {errors.emergency_contact_phone && (
+              <Text style={{ color: "red" }}>{errors.emergency_contact_phone}</Text>
+            )}
             <LottieView
-                  source={require("../../assets/lotties/emergency_lottie.json")}
-                  autoPlay
-                  loop
-                  style={{
-                    width: 400,
-                    height: 400,
-                    alignSelf: "center",
-                    marginTop: 100,
-                  }}
-                />
+              source={require("../../assets/lotties/emergency_lottie.json")}
+              autoPlay
+              loop
+              style={{
+                width: 400,
+                height: 400,
+                alignSelf: "center",
+                marginTop: 100,
+              }}
+            />
           </>
         )}
         {step === 6 && (
@@ -592,7 +722,13 @@ const ProfileCreateScreen = ({ route }) => {
                 Gender: <Text style={styles.reviewValue}>{form.gender}</Text>
               </Text>
               <Text style={styles.reviewLabel}>
-                Phone: <Text style={styles.reviewValue}>{form.phone}</Text>
+                Phone:{" "}
+                <Text style={styles.reviewValue}>
+                  {parsePhoneNumberFromString(
+                    form.phone,
+                    "AU"
+                  )?.formatInternational() || form.phone}
+                </Text>
               </Text>
               <Text style={styles.reviewLabel}>
                 Skills:{" "}
@@ -608,7 +744,10 @@ const ProfileCreateScreen = ({ route }) => {
               <Text style={styles.reviewLabel}>
                 Emergency Phone:{" "}
                 <Text style={styles.reviewValue}>
-                  {form.emergency_contact_phone}
+                  {parsePhoneNumberFromString(
+                    form.emergency_contact_phone,
+                    "AU"
+                  )?.formatInternational() || form.emergency_contact_phone}
                 </Text>
               </Text>
             </View>
@@ -624,15 +763,15 @@ const ProfileCreateScreen = ({ route }) => {
               Review your details carefully before submitting.
             </Text>
             <LottieView
-                  source={require("../../assets/lotties/review_submit.json")}
-                  autoPlay
-                  loop
-                  style={{
-                    width: 200,
-                    height: 200,
-                    alignSelf: "center",
-                  }}
-                />
+              source={require("../../assets/lotties/review_submit.json")}
+              autoPlay
+              loop
+              style={{
+                width: 200,
+                height: 200,
+                alignSelf: "center",
+              }}
+            />
           </>
         )}
       </ScrollView>
