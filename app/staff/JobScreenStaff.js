@@ -1,4 +1,4 @@
-import { Feather, Ionicons } from "@expo/vector-icons";
+import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@react-navigation/native";
 import * as SecureStore from "expo-secure-store";
 import LottieView from "lottie-react-native";
@@ -7,6 +7,7 @@ import { ScrollView } from "react-native";
 
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -20,6 +21,8 @@ import {
   View,
 } from "react-native";
 import FontAwesome from "react-native-vector-icons/FontAwesome";
+import { staffServices } from "./ProfileScreen";
+import StartJobPage from "./StartJob";
 
 const JOBS_API_URL = "https://api.theopenshift.com/v1/users/search_bookings";
 const MY_REQUESTS_API_URL =
@@ -67,15 +70,65 @@ const JobScreenStaff = (props) => {
   const [checkoutMessage, setCheckoutMessage] = useState("");
   const timerInterval = useRef(null);
   const orgFetchInProgress = useRef({});
+  const [jobIdToStart, setJobIdToStart] = useState(null);
+  const [currentPageView, setCurrentPageView] = useState("jobsList");
+  const [rateWarning, setRateWarning] = useState("");
 
   // Fetch access token on mount
   useEffect(() => {
     (async () => {
       const token = await SecureStore.getItemAsync("access_token");
-      console.log("[JobScreenStaff] Resolved access_token:", token);
       setAccessToken(token || "");
     })();
   }, []);
+
+  // Combined fetch function for requests and bookings
+  const fetchUserActivities = useCallback(async () => {
+    if (!accessToken) return;
+    setRefreshing(true);
+    try {
+      // Fetch my requests
+      const requestsRes = await fetch(MY_REQUESTS_API_URL, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!requestsRes.ok) throw new Error("Failed to fetch my requests");
+      const requestsData = await requestsRes.json();
+      setMyRequests(
+        Array.isArray(requestsData) ? requestsData : requestsData.items || []
+      );
+
+      // Fetch my bookings (approved requests that become jobs)
+      const bookingsRes = await fetch(
+        "https://api.theopenshift.com/v1/bookings/my_bookings",
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }
+      );
+      if (!bookingsRes.ok) throw new Error("Failed to fetch my bookings");
+      const bookingsData = await bookingsRes.json();
+      setMyBookings(
+        Array.isArray(bookingsData)
+          ? bookingsData
+          : bookingsData.items || bookingsData.bookings || []
+      );
+    } catch (e) {
+      setError(e.message || "Error fetching activities");
+      setMyRequests([]);
+      setMyBookings([]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [accessToken]);
+
+  // Fetch data when accessToken changes, after sending a request, or when tab changes to My Requests/History
+  useEffect(() => {
+    if (accessToken) {
+      fetchJobs(true); // Always refresh jobs when accessToken is available
+      if (activeTab === "My Requests" || activeTab === "History") {
+        fetchUserActivities();
+      }
+    }
+  }, [accessToken, requestStatus, activeTab, fetchJobs, fetchUserActivities]);
 
   // Fetch jobs
   const fetchJobs = useCallback(
@@ -105,7 +158,6 @@ const JobScreenStaff = (props) => {
         params.push(`page=${reset ? 1 : page}`);
         params.push("limit=10");
         const url = `${JOBS_API_URL}?${params.join("&")}`;
-        //console.log('[JobScreenStaff] Fetching jobs from:', url);
         const res = await fetch(url, {
           headers: { Authorization: `Bearer ${accessToken}` },
         });
@@ -117,7 +169,6 @@ const JobScreenStaff = (props) => {
         }
         if (!res.ok) throw new Error("Failed to fetch jobs");
         const data = await res.json();
-        //console.log('[JobScreenStaff] API response:', JSON.stringify(data));
         if (reset) {
           setJobs(data.items || []);
         } else {
@@ -127,7 +178,6 @@ const JobScreenStaff = (props) => {
         setError("");
       } catch (e) {
         setError(e.message || "Error fetching jobs");
-        console.log("[JobScreenStaff] Fetch error:", e);
       }
       setLoading(false);
       setRefreshing(false);
@@ -144,6 +194,9 @@ const JobScreenStaff = (props) => {
   const onRefresh = () => {
     setPage(1);
     fetchJobs(true);
+    if (activeTab === "My Requests" || activeTab === "History") {
+      fetchUserActivities();
+    }
   };
 
   // Load more for pagination
@@ -156,7 +209,6 @@ const JobScreenStaff = (props) => {
     if (!createdAt) return "";
     const created = new Date(createdAt);
     const now = new Date();
-    // Zero out time for both dates
     created.setHours(0, 0, 0, 0);
     now.setHours(0, 0, 0, 0);
     const diffMs = now - created;
@@ -211,7 +263,6 @@ const JobScreenStaff = (props) => {
       return;
     orgFetchInProgress.current[org_id] = true;
     try {
-      // Replace with your actual org API endpoint
       const res = await fetch(`https://api.theopenshift.com/v1/orgs/${org_id}`);
       if (res.ok) {
         const data = await res.json();
@@ -226,7 +277,65 @@ const JobScreenStaff = (props) => {
 
   // Send booking request
   const sendBookingRequest = async (job) => {
+    //console.log("Send Request button clicked for job:", job);
+    console.log("Users Service", staffServices);
     if (!accessToken || !job?.id) return;
+
+    if (!staffServices.includes(job.service)) {
+    Alert.alert(
+      "Service Type Mismatch",
+      "You are applying for a job that is not your type. You might get rejected.",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+          onPress: () => {
+            // Do nothing, abort sending request
+          },
+        },
+        {
+          text: "Continue",
+          onPress: async () => {
+            // Proceed with sending the request
+            setRequestStatus("pending");
+            try {
+              const res = await fetch(
+                "https://api.theopenshift.com/v1/bookings/request",
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${accessToken}`,
+                  },
+                  body: JSON.stringify({
+                    booking_id: job.id,
+                    rate: rateInput,
+                    comment: fitMsgInput,
+                  }),
+                }
+              );
+              const data = await res.json();
+              if (res.ok) {
+                setRequestResponse(data);
+                setRequestStatus("success");
+                setRequestModalVisible(true);
+                fetchUserActivities();
+              } else {
+                setRequestResponse(data);
+                setRequestStatus("error");
+                setRequestModalVisible(true);
+              }
+            } catch (e) {
+              setRequestResponse({ error: e.message });
+              setRequestStatus("error");
+              setRequestModalVisible(true);
+            }
+          },
+        },
+      ]
+    );
+    return;
+  }
     setRequestStatus("pending");
     try {
       const res = await fetch(
@@ -249,8 +358,7 @@ const JobScreenStaff = (props) => {
         setRequestResponse(data);
         setRequestStatus("success");
         setRequestModalVisible(true);
-        // Always fetch latest requests from backend after sending a request
-        fetchMyRequests();
+        fetchUserActivities(); // Refresh all activities
       } else {
         setRequestResponse(data);
         setRequestStatus("error");
@@ -263,53 +371,7 @@ const JobScreenStaff = (props) => {
     }
   };
 
-  // Fetch my requests from backend and display in My Requests tab
-  const fetchMyRequests = useCallback(async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetch(MY_REQUESTS_API_URL, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!res.ok) throw new Error("Failed to fetch my requests");
-      const data = await res.json();
-      // data.items should be an array of requests with booking_id, status, etc.
-      setMyRequests(Array.isArray(data) ? data : data.items || []);
-    } catch (e) {
-      setMyRequests([]); // fallback: show empty if error
-    }
-  }, [accessToken]);
-
-  // Fetch my requests when accessToken changes or after sending a request
-  useEffect(() => {
-    if (accessToken) fetchMyRequests();
-  }, [accessToken, fetchMyRequests, requestStatus]);
-
-  // Fetch my bookings for Activity tab
-  const fetchMyBookings = useCallback(async () => {
-    if (!accessToken) return;
-    try {
-      const res = await fetch(
-        "https://api.theopenshift.com/v1/bookings/my_bookings",
-        {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        }
-      );
-      if (!res.ok) throw new Error("Failed to fetch my bookings");
-      const data = await res.json();
-      setMyBookings(
-        Array.isArray(data) ? data : data.items || data.bookings || []
-      );
-    } catch (e) {
-      // fallback: do nothing
-    }
-  }, [accessToken]);
-
-  // Fetch my bookings on mount and when accessToken changes
-  useEffect(() => {
-    if (accessToken) fetchMyBookings();
-  }, [accessToken, fetchMyBookings]);
-
-  // Timer logic for Activity tab
+  // Timer logic for Activity tab (unchanged)
   const startTimer = (bookingId) => {
     setActivityTimers((prev) => ({
       ...prev,
@@ -347,19 +409,26 @@ const JobScreenStaff = (props) => {
     setTimeout(() => setCheckoutMessage(""), 3000);
   };
 
-  // Fetch jobs for Find Jobs tab: exclude jobs with a pending/approved request in myRequests (match by booking_id)
-  const myPendingOrApprovedBookingIds = new Set(
+  // Fetch jobs for Find Jobs tab: exclude jobs with a pending/approved/sent_for_approval/pending_payment request in myRequests (match by booking_id)
+  const myPendingOrActiveBookingIds = new Set(
     myRequests
-      .filter((r) => r.status === "pending" || r.status === "approved")
+      .filter((r) =>
+        [
+          "pending",
+          "approved",
+          "sent_for_approval",
+          "pending_payment",
+        ].includes(r.status)
+      )
       .map((r) => r.booking_id)
   );
   const jobsForFindJobs = jobs.filter(
-    (j) => !myPendingOrApprovedBookingIds.has(j.id)
+    (j) => !myPendingOrActiveBookingIds.has(j.id)
   );
 
-  // Render job card
+  // Render job card for "Find Jobs"
   const renderJob = ({ item }) => {
-    if (!item) return null; // Defensive: skip if item is undefined/null
+    if (!item) return null;
     const isExpanded = expandedJobId === item.id;
     const showFullDesc = !!showFullDescMap[item.id];
     const descLimit = 180;
@@ -368,17 +437,24 @@ const JobScreenStaff = (props) => {
     const displayDesc =
       showFullDesc || !shouldTruncate ? desc : desc.slice(0, descLimit) + "...";
     const org = item.org_id ? orgDetails[item.org_id] : null;
-    // Collapsed card
+
+    // Determine if the user has an 'active' request for this job
+    const myRequestForThisJob = myRequests.find(
+      (r) =>
+        r.booking_id === item.id &&
+        [
+          "pending",
+          "approved",
+          "sent_for_approval",
+          "pending_payment",
+        ].includes(r.status)
+    );
+    const showRequestForm = !myRequestForThisJob;
+
     if (!isExpanded) {
       return (
         <View style={styles.cardCollapsed}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              marginBottom: 8,
-            }}
-          >
+          <View style={styles.cardHeaderCollapsed}>
             <FontAwesome
               name="briefcase"
               size={24}
@@ -389,13 +465,7 @@ const JobScreenStaff = (props) => {
               {item.title || "Untitled Job"}
             </Text>
           </View>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              marginBottom: 8,
-            }}
-          >
+          <View style={styles.cardDetailsCollapsed}>
             <View style={styles.pillCollapsed}>
               <Text style={styles.pillTextCollapsed}>{item.service}</Text>
             </View>
@@ -407,8 +477,9 @@ const JobScreenStaff = (props) => {
                   color="#334eb8"
                   style={{ marginRight: 4 }}
                 />
-                <Text style={styles.pillTextCollapsed}>
+                <Text style={styles.pillTextExpanded}>
                   {formatDateTime(item.start_time).split(" ")[0]}{" "}
+                  {formatDateTime(item.start_time).split(" ")[1]}{" "}
                   {formatTimeRange(item.start_time, item.end_time)}
                 </Text>
               </View>
@@ -433,23 +504,11 @@ const JobScreenStaff = (props) => {
         </View>
       );
     }
+
     // Expanded card
-    // Always get the request for this job from myRequests (fetched from backend) using booking_id
-    const myRequestForThisJob = myRequests.find(
-      (r) =>
-        r.booking_id === item.id &&
-        (r.status === "pending" || r.status === "approved")
-    );
-    const showRequestForm = !myRequestForThisJob;
     return (
       <View style={styles.cardExpanded}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            marginBottom: 8,
-          }}
-        >
+        <View style={styles.cardHeaderExpanded}>
           <FontAwesome
             name="briefcase"
             size={28}
@@ -464,13 +523,7 @@ const JobScreenStaff = (props) => {
           {org?.name || item.company || "Company Name"}
           {item.suburb ? ` · ${item.suburb}` : ""}
         </Text>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            marginBottom: 8,
-          }}
-        >
+        <View style={styles.cardDetailsExpanded}>
           <View style={styles.pillExpanded}>
             <Text style={styles.pillTextExpanded}>{item.service}</Text>
           </View>
@@ -516,37 +569,127 @@ const JobScreenStaff = (props) => {
             <Text style={styles.orgAddressExpanded}>
               Address: {org?.address || item.address || "N/A"}
             </Text>
-            <Text style={styles.orgAddressExpanded}></Text>
           </View>
+
           {myRequestForThisJob ? (
-            <View style={{ alignItems: "center", marginVertical: 12 }}>
-              <Text
-                style={{
-                  color:
+            <View
+              style={[
+                styles.statusMessageContainer,
+                {
+                  backgroundColor:
                     myRequestForThisJob.status === "approved"
-                      ? "#5bb780"
+                      ? "#e0f2f1" // Light teal
                       : myRequestForThisJob.status === "pending"
-                      ? "#f9a825"
-                      : "#e53935",
-                  fontWeight: "bold",
-                  fontSize: 16,
-                  marginBottom: 8,
-                }}
+                      ? "#fffde7" // Light yellow
+                      : myRequestForThisJob.status === "sent_for_approval"
+                      ? "#ede7f6" // Light purple
+                      : myRequestForThisJob.status === "pending_payment"
+                      ? "#fff3e0" // Light orange
+                      : "#ffebee", // Light red for rejected/cancelled
+                  borderColor:
+                    myRequestForThisJob.status === "approved"
+                      ? "#26a69a"
+                      : myRequestForThisJob.status === "pending"
+                      ? "#ffb300"
+                      : myRequestForThisJob.status === "sent_for_approval"
+                      ? "#7e57c2"
+                      : myRequestForThisJob.status === "pending_payment"
+                      ? "#ff9800"
+                      : "#ef5350",
+                },
+              ]}
+            >
+              <Ionicons
+                name="information-circle-outline"
+                size={20}
+                color={
+                  myRequestForThisJob.status === "approved"
+                    ? "#26a69a"
+                    : myRequestForThisJob.status === "pending"
+                    ? "#ffb300"
+                    : myRequestForThisJob.status === "sent_for_approval"
+                    ? "#7e57c2"
+                    : myRequestForThisJob.status === "pending_payment"
+                    ? "#ff9800"
+                    : "#ef5350"
+                }
+                style={{ marginRight: 8 }}
+              />
+              <Text
+                style={[
+                  styles.statusMessageText,
+                  {
+                    color:
+                      myRequestForThisJob.status === "approved"
+                        ? "#26a69a"
+                        : myRequestForThisJob.status === "pending"
+                        ? "#ffb300"
+                        : myRequestForThisJob.status === "sent_for_approval"
+                        ? "#7e57c2"
+                        : myRequestForThisJob.status === "pending_payment"
+                        ? "#ff9800"
+                        : "#ef5350",
+                  },
+                ]}
               >
-                Status: {myRequestForThisJob.status}
+                {myRequestForThisJob.status === "approved" &&
+                  "Your request for this job has been approved."}
+                {myRequestForThisJob.status === "pending" &&
+                  "You have a pending request for this job."}
+                {myRequestForThisJob.status === "sent_for_approval" &&
+                  "Timesheet sent for approval."}
+                {myRequestForThisJob.status === "pending_payment" &&
+                  "Timesheet approved, payment pending."}
+                {myRequestForThisJob.status === "rejected" &&
+                  "Your request for this job was rejected."}
+                {myRequestForThisJob.status === "cancelled" &&
+                  "This request has been cancelled."}
               </Text>
             </View>
           ) : (
             <>
               {showRequestForm && (
                 <>
+                  {rateWarning ? (
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        marginBottom: 8,
+                        marginLeft: 5,
+                      }}
+                    >
+                      <Ionicons
+                        name="warning"
+                        size={18}
+                        color="#e53935"
+                        style={{ marginRight: 6 }}
+                      />
+                      <Text
+                        style={{
+                          color: "#e53935",
+                          fontWeight: "bold",
+                          fontSize: 14,
+                        }}
+                      >
+                        Rate should be at least $30 as per Australian standard.
+                      </Text>
+                    </View>
+                  ) : null}
                   <View style={styles.requestFormRowExpanded}>
                     <TextInput
                       style={styles.inputExpanded}
                       placeholder="Rate"
                       keyboardType="numeric"
                       value={rateInput}
-                      onChangeText={setRateInput}
+                      onChangeText={(text) => {
+                        setRateInput(text);
+                        if (parseFloat(text) < 30) {
+                          setRateWarning("show");
+                        } else {
+                          setRateWarning("");
+                        }
+                      }}
                     />
                     <TextInput
                       style={styles.inputExpanded}
@@ -558,7 +701,7 @@ const JobScreenStaff = (props) => {
                   <TouchableOpacity
                     style={styles.sendBtnExpanded}
                     onPress={() => sendBookingRequest(item)}
-                    disabled={requestStatus === "pending"}
+                    disabled={requestStatus === "pending" || !!rateWarning}
                   >
                     <Text style={styles.sendBtnTextExpanded}>
                       {requestStatus === "pending"
@@ -583,861 +726,711 @@ const JobScreenStaff = (props) => {
     );
   };
 
-  // --- UI ---
-  return (
-    <View style={{ flex: 1, backgroundColor: "#fff8f7" }}>
-      <View
-        style={{
-          backgroundColor: "#123456",
-          borderBottomLeftRadius: 20,
-          borderBottomRightRadius: 20,
-          height: 100,
-          alignItems: "center",
-          paddingHorizontal: 20,
-        }}
-      >
-        {/* Left-aligned title */}
-        <View style={{ width: "100%" }}>
-          <Text
-            style={{
-              color: "#fff",
-              fontSize: 30,
-              fontWeight: "bold",
-              paddingTop: 15,
-              paddingBottom: 8,
-            }}
-          >
-            Jobs
+  const renderMyRequest = ({ item }) => {
+    if (!item) return null;
+    const associatedBooking = myBookings.find((b) => b.id === item.booking_id);
+
+    const getStatusStyles = (status) => {
+      switch (status) {
+        case "approved":
+          return { backgroundColor: "#d4edda", color: "#155724" }; // Green
+        case "pending":
+          return { backgroundColor: "#ffeeba", color: "#856404" }; // Yellow
+        case "sent_for_approval":
+          return { backgroundColor: "#e2d9f3", color: "#4f3a7a" }; // Purple
+        case "pending_payment":
+          return { backgroundColor: "#ffe0b2", color: "#e65100" }; // Orange
+        case "rejected":
+        case "cancelled":
+          return { backgroundColor: "#f8d7da", color: "#721c24" }; // Red
+        default:
+          return { backgroundColor: "#e9ecef", color: "#495057" }; // Gray
+      }
+    };
+
+    const statusStyle = getStatusStyles(item.status);
+
+    return (
+      <View style={styles.myRequestCard}>
+        <View style={styles.myRequestCardHeader}>
+          <Text style={styles.myRequestTitle}>
+            Request for Job ID: {item.booking_id}
           </Text>
-          <View>
+          <View
+            style={[
+              styles.statusBadge,
+              { backgroundColor: statusStyle.backgroundColor },
+            ]}
+          >
             <Text
-              style={{
-                color: "#fff",
-                fontSize: 13,
-                textAlign: "left",
-                fontWeight: "120",
-              }}
+              style={[styles.statusBadgeText, { color: statusStyle.color }]}
             >
-              Caring starts with the right connection, let's find yours ✨
+              {item.status.replace(/_/g, " ").toUpperCase()}
             </Text>
           </View>
         </View>
+        <Text style={styles.myRequestDetail}>Rate: ${item.rate}</Text>
+        <Text style={styles.myRequestDetail}>
+          Comment: {item.comment || "N/A"}
+        </Text>
+
+        {/* Action Buttons */}
+        <View style={styles.myRequestButtonsContainer}>
+          {item.status === "approved" && associatedBooking ? (
+            <TouchableOpacity
+              style={styles.startJobButton}
+              onPress={() => {
+                navigation.navigate("StartJob", {
+                  bookingId: item.booking_id,
+                  access_token: accessToken,
+                });
+              }}
+            >
+              <Text style={styles.startJobButtonText}>Start Job</Text>
+            </TouchableOpacity>
+          ) : (item.status === "pending" ||
+              item.status === "sent_for_approval" ||
+              item.status === "pending_payment") &&
+            associatedBooking ? (
+            <TouchableOpacity
+              style={styles.viewDetailsButton}
+              onPress={() => {
+                setJobIdToStart(item.booking_id);
+                setCurrentPageView("startJob");
+              }}
+            >
+              <Text style={styles.viewDetailsButtonText}>View Details</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+      </View>
+    );
+  };
+
+  const renderHistoryRequest = ({ item }) => {
+    if (!item) return null;
+
+    const getStatusStyles = (status) => {
+      switch (status) {
+        case "rejected":
+        case "cancelled":
+          return { backgroundColor: "#f8d7da", color: "#721c24" }; // Red
+        default:
+          return { backgroundColor: "#e9ecef", color: "#495057" }; // Gray
+      }
+    };
+
+    const statusStyle = getStatusStyles(item.status);
+
+    return (
+      <View style={styles.myRequestCard}>
+        <View style={styles.myRequestCardHeader}>
+          <Text style={styles.myRequestTitle}>
+            Request for Job ID: {item.booking_id}
+          </Text>
+          <View
+            style={[
+              styles.statusBadge,
+              { backgroundColor: statusStyle.backgroundColor },
+            ]}
+          >
+            <Text
+              style={[styles.statusBadgeText, { color: statusStyle.color }]}
+            >
+              {item.status.replace(/_/g, " ").toUpperCase()}
+            </Text>
+          </View>
+        </View>
+        <Text style={styles.myRequestDetail}>Rate: ${item.rate}</Text>
+        <Text style={styles.myRequestDetail}>
+          Comment: {item.comment || "N/A"}
+        </Text>
+        {/* No action buttons for history items */}
+      </View>
+    );
+  };
+
+  if (currentPageView === "startJob" && jobIdToStart) {
+    const jobToDisplay =
+      jobs.find((job) => job.id === jobIdToStart) ||
+      myBookings.find((booking) => booking.id === jobIdToStart) ||
+      myRequests.find((req) => req.booking_id === jobIdToStart);
+
+    if (!jobToDisplay) {
+      return (
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>Job details not found.</Text>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => setCurrentPageView("jobsList")}
+          >
+            <Text style={styles.backButtonText}>Back to Jobs</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return (
+      <StartJobPage
+        job={jobToDisplay}
+        onBack={() => {
+          setCurrentPageView("jobsList");
+          setJobIdToStart(null);
+        }}
+      />
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      {/* Header section */}
+      <View style={styles.header}>
+        <View style={styles.titleContainer}>
+          <Text style={styles.title}>Jobs</Text>
+          <Text style={styles.subtitle}>
+            Caring starts with the right connection, let's find yours ✨
+          </Text>
+        </View>
       </View>
 
-      {/* Top Tabs + Bell */}
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "center",
-          marginTop: 12,
-          marginBottom: 4,
-        }}
-      >
+      {/* Top Tabs + Bell Icon */}
+      <View style={styles.tabsContainer}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          style={{ flex: 1 }}
-          contentContainerStyle={{
-            flexDirection: "row",
-            justifyContent: "center",
-            alignItems: "center",
-            paddingHorizontal: 4,
-          }}
+          contentContainerStyle={styles.tabsScrollViewContent}
         >
           {["Find Jobs", "My Requests", "History"].map((tab) => (
             <TouchableOpacity
               key={tab}
-              style={{
-                paddingVertical: 8,
-                paddingHorizontal: 18,
-                borderRadius: 18,
-                backgroundColor: activeTab === tab ? "#334eb8" : "#e6edff",
-                marginHorizontal: 6,
-              }}
+              style={[
+                styles.tabButton,
+                activeTab === tab && styles.tabButtonActive,
+              ]}
               onPress={() => setActiveTab(tab)}
             >
               <Text
-                style={{
-                  color: activeTab === tab ? "#fff" : "#334eb8",
-                  fontWeight: "bold",
-                  fontSize: 15,
-                }}
+                style={[
+                  styles.tabButtonText,
+                  activeTab === tab && styles.tabButtonTextActive,
+                ]}
               >
                 {tab}
               </Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
-        <TouchableOpacity style={[styles.bellBtn, { marginLeft: 8 }]}>
+        <TouchableOpacity style={styles.bellBtn}>
           <Ionicons name="notifications-outline" size={22} color="#334eb8" />
         </TouchableOpacity>
       </View>
-      {/* Only show job list if Find Jobs is active */}
+
+      {/* Conditional Rendering based on activeTab */}
       {activeTab === "Find Jobs" && (
-        <>
-          {/* Header */}
-          <View style={styles.headerWrap}></View>
-          {/* Search & Filter Bar */}
-          <View style={styles.searchBarWrap}>
-            <Ionicons
-              name="search"
-              size={20}
-              color="#334eb8"
-              style={{ marginRight: 8 }}
-            />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Enter Suburb"
-              value={filters.suburb}
-              onChangeText={(t) => setFilters((f) => ({ ...f, suburb: t }))}
-            />
-            <View style={{ position: "relative" }}>
-              <TouchableOpacity
-                style={styles.filterBtn}
-                onPress={() => setFilterModalVisible(true)}
-              >
-                <Feather name="sliders" size={18} color="#334eb8" />
-                {(filters.service.length > 0 || filters.day.length > 0) && (
-                  <View style={styles.filterDot} />
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-          {/* Clear Filters Button */}
-          {(filters.service.length > 0 || filters.day.length > 0) && (
-            <TouchableOpacity
-              style={styles.clearFiltersBtn}
-              onPress={() =>
-                setFilters((f) => ({ ...f, service: [], day: [] }))
-              }
-            >
-              <Text style={styles.clearFiltersText}>Clear filters ✕</Text>
-            </TouchableOpacity>
-          )}
-          {/* Filter Modal */}
-          <Modal
-            visible={filterModalVisible}
-            animationType="slide"
-            transparent
-            onRequestClose={() => setFilterModalVisible(false)}
-          >
-            <Pressable
-              style={styles.modalOverlay}
-              onPress={() => setFilterModalVisible(false)}
-            />
-            <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : undefined}
-              style={styles.modalContentWrap}
-            >
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Filter Jobs</Text>
-                <Text style={styles.modalLabel}>Service Type</Text>
-                <View style={styles.pillsRow}>
-                  {SERVICE_TYPES.map((s) => (
-                    <TouchableOpacity
-                      key={s.key}
-                      style={[
-                        styles.pill,
-                        filters.service.includes(s.key) && styles.pillActive,
-                      ]}
-                      onPress={() => {
-                        setFilters((f) => ({
-                          ...f,
-                          service: f.service.includes(s.key)
-                            ? f.service.filter((k) => k !== s.key)
-                            : [...f.service, s.key],
-                        }));
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.pillText,
-                          filters.service.includes(s.key) &&
-                            styles.pillTextActive,
-                        ]}
-                      >
-                        {s.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <Text style={styles.modalLabel}>Day</Text>
-                <View style={styles.pillsRow}>
-                  {DAYS.map((day) => (
-                    <TouchableOpacity
-                      key={day}
-                      style={[
-                        styles.pill,
-                        filters.day.includes(day) && styles.pillActive,
-                      ]}
-                      onPress={() => {
-                        setFilters((f) => ({
-                          ...f,
-                          day: f.day.includes(day)
-                            ? f.day.filter((d) => d !== day)
-                            : [...f.day, day],
-                        }));
-                      }}
-                    >
-                      <Text
-                        style={[
-                          styles.pillText,
-                          filters.day.includes(day) && styles.pillTextActive,
-                        ]}
-                      >
-                        {day}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <TouchableOpacity
-                  style={styles.modalApplyBtn}
-                  onPress={() => setFilterModalVisible(false)}
-                >
-                  <Text style={{ color: "#fff", fontWeight: "bold" }}>
-                    Apply Filters
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </KeyboardAvoidingView>
-          </Modal>
-          {/* Job List */}
-          {loading && page === 1 ? (
-            <View
-              style={{
-                flex: 1,
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
+        <FlatList
+          data={jobsForFindJobs}
+          renderItem={renderJob}
+          keyExtractor={(item) => item.id}
+          onEndReached={loadMore}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={
+            loading && hasMore ? (
               <ActivityIndicator size="large" color="#334eb8" />
-            </View>
-          ) : error ? (
-            <View
-              style={{
-                flex: 1,
-                justifyContent: "center",
-                alignItems: "center",
-              }}
-            >
-              <Text style={{ color: "#e53935", fontSize: 16 }}>{error}</Text>
-              {error.includes("log in") && (
+            ) : null
+          }
+          ListEmptyComponent={
+            !loading && !error && jobsForFindJobs.length === 0 ? (
+              <Text style={styles.emptyListText}>No jobs found.</Text>
+            ) : null
+          }
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+        />
+      )}
+
+      {activeTab === "My Requests" && (
+        <FlatList
+          data={myRequests.filter((r) =>
+            [
+              "pending",
+              "approved",
+              "sent_for_approval",
+              "pending_payment",
+            ].includes(r.status)
+          )}
+          renderItem={renderMyRequest}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={
+            !refreshing &&
+            myRequests.filter((r) =>
+              [
+                "pending",
+                "approved",
+                "sent_for_approval",
+                "pending_payment",
+              ].includes(r.status)
+            ).length === 0 ? (
+              <Text style={styles.emptyListText}>
+                No active requests found.
+              </Text>
+            ) : null
+          }
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+        />
+      )}
+
+      {activeTab === "History" && (
+        <FlatList
+          data={myRequests.filter((r) =>
+            ["rejected", "cancelled"].includes(r.status)
+          )}
+          renderItem={renderHistoryRequest}
+          keyExtractor={(item) => item.id}
+          ListEmptyComponent={
+            !refreshing &&
+            myRequests.filter((r) =>
+              ["rejected", "cancelled"].includes(r.status)
+            ).length === 0 ? (
+              <Text style={styles.emptyListText}>
+                No historical requests found.
+              </Text>
+            ) : null
+          }
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          style={styles.list}
+          contentContainerStyle={styles.listContent}
+        />
+      )}
+
+      {error && <Text style={styles.errorText}>{error}</Text>}
+
+      {/* Filter Modal */}
+      <Modal
+        visible={filterModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setFilterModalVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setFilterModalVisible(false)}
+        />
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          style={styles.modalContentWrap}
+        >
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Filter Jobs</Text>
+            <Text style={styles.modalLabel}>Service Type</Text>
+            <View style={styles.pillsRow}>
+              {SERVICE_TYPES.map((s) => (
                 <TouchableOpacity
-                  onPress={() => navigation.navigate("Profile")}
-                  style={{
-                    marginTop: 16,
-                    backgroundColor: "#334eb8",
-                    borderRadius: 8,
-                    paddingHorizontal: 18,
-                    paddingVertical: 10,
+                  key={s.key}
+                  style={[
+                    styles.pill,
+                    filters.service.includes(s.key) && styles.pillActive,
+                  ]}
+                  onPress={() => {
+                    setFilters((f) => ({
+                      ...f,
+                      service: f.service.includes(s.key)
+                        ? f.service.filter((k) => k !== s.key)
+                        : [...f.service, s.key],
+                    }));
                   }}
                 >
-                  <Text style={{ color: "#fff", fontWeight: "bold" }}>
-                    Go to Profile / Log in
+                  <Text
+                    style={[
+                      styles.pillText,
+                      filters.service.includes(s.key) && styles.pillTextActive,
+                    ]}
+                  >
+                    {s.label}
                   </Text>
                 </TouchableOpacity>
-              )}
+              ))}
             </View>
-          ) : (
-            <FlatList
-              data={jobsForFindJobs}
-              keyExtractor={(item, index) =>
-                item.id ? `job-${item.id}` : `job-${index}`
-              }
-              renderItem={renderJob}
-              contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-              onEndReached={loadMore}
-              onEndReachedThreshold={0.2}
-              refreshControl={
-                <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-              }
-              ListFooterComponent={
-                hasMore && !loading ? (
-                  <TouchableOpacity
-                    onPress={loadMore}
-                    style={styles.loadMoreBtn}
+
+            <Text style={styles.modalLabel}>Day of Week</Text>
+            <View style={styles.pillsRow}>
+              {DAYS.map((d) => (
+                <TouchableOpacity
+                  key={d}
+                  style={[
+                    styles.pill,
+                    filters.day.includes(d) && styles.pillActive,
+                  ]}
+                  onPress={() => {
+                    setFilters((f) => ({
+                      ...f,
+                      day: f.day.includes(d)
+                        ? f.day.filter((k) => k !== d)
+                        : [...f.day, d],
+                    }));
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.pillText,
+                      filters.day.includes(d) && styles.pillTextActive,
+                    ]}
                   >
-                    <Feather
-                      name="chevron-down"
-                      size={18}
-                      color="#334eb8"
-                      style={{ marginBottom: -2 }}
-                    />
-                    <Text style={{ color: "#334eb8", fontWeight: "bold" }}>
-                      Load More
-                    </Text>
-                  </TouchableOpacity>
-                ) : null
-              }
-            />
-          )}
-        </>
-      )}
-      {activeTab === "My Requests" && (
-        <View style={{ flex: 1 }}>
-          {myRequests.length === 0 ? (
-            <View
-              style={{
-                flex: 1,
-                justifyContent: "center",
-                alignItems: "center",
+                    {d}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              style={styles.applyFiltersBtn}
+              onPress={() => {
+                setFilterModalVisible(false);
+                setPage(1); // Reset page to 1 on applying new filters
+                fetchJobs(true); // Re-fetch jobs with new filters from page 1
               }}
             >
-              <Text
-                style={{ color: "#334eb8", fontSize: 18, fontWeight: "bold" }}
-              >
-                No requests yet.
-              </Text>
-            </View>
-          ) : (
-            <FlatList
-              data={myRequests}
-              keyExtractor={(item, index) =>
-                item.id ? `reqid-${item.id}` : `req-${index}`
-              }
-              renderItem={({ item }) => {
-                return (
-                  <View style={styles.cardExpanded}>
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        alignItems: "center",
-                        marginBottom: 8,
-                        justifyContent: "space-between",
-                      }}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text
-                          style={[styles.jobTitleExpanded, { marginBottom: 4 }]}
-                        >
-                          Request for Booking #{item.booking_id}
-                        </Text>
-                        <Text
-                          style={{
-                            color: "#666",
-                            fontSize: 14,
-                            marginBottom: 2,
-                          }}
-                        >
-                          Comment:{" "}
-                          <Text
-                            style={{
-                              fontStyle: item.comment ? "normal" : "italic",
-                              color: item.comment ? "#333" : "#bbb",
-                            }}
-                          >
-                            {item.comment || "No comment"}
-                          </Text>
-                        </Text>
-                        <View
-                          style={{
-                            flexDirection: "row",
-                            flexWrap: "wrap",
-                            gap: 8,
-                            marginTop: 2,
-                          }}
-                        >
-                          <Text
-                            style={{
-                              fontSize: 13,
-                              color: "#666",
-                              marginRight: 10,
-                            }}
-                          >
-                            Rate:{" "}
-                            <Text style={{ color: "#111", fontWeight: "bold" }}>
-                              {item.rate}
-                            </Text>
-                          </Text>
-                          <Text
-                            style={{
-                              fontSize: 13,
-                              color: "#666",
-                              marginRight: 10,
-                            }}
-                          >
-                            Status:{" "}
-                            <Text
-                              style={{
-                                backgroundColor:
-                                  item.status === "approved"
-                                    ? "#d1fae5"
-                                    : item.status === "rejected"
-                                    ? "#fee2e2"
-                                    : item.status === "pending"
-                                    ? "#fef9c3"
-                                    : "#f3f4f6",
-                                color:
-                                  item.status === "approved"
-                                    ? "#059669"
-                                    : item.status === "rejected"
-                                    ? "#dc2626"
-                                    : item.status === "pending"
-                                    ? "#b45309"
-                                    : "#374151",
-                                borderRadius: 12,
-                                paddingHorizontal: 8,
-                                paddingVertical: 2,
-                                fontWeight: "bold",
-                              }}
-                            >
-                              {item.status}
-                            </Text>
-                          </Text>
-                          <Text style={{ fontSize: 13, color: "#666" }}>
-                            Request ID:{" "}
-                            <Text style={{ color: "#111", fontWeight: "bold" }}>
-                              {item.id}
-                            </Text>
-                          </Text>
-                        </View>
-                        {item.status === "approved" && (
-                          <TouchableOpacity
-                            style={{
-                              backgroundColor: "#334eb8",
-                              borderRadius: 8,
-                              paddingVertical: 10,
-                              paddingHorizontal: 24,
-                              marginTop: 12,
-                              alignSelf: "flex-start",
-                            }}
-                            onPress={() => {
-                              const shift =
-                                jobs.find((j) => j.id == item.booking_id) ||
-                                myBookings.find((j) => j.id == item.booking_id);
-                              if (!shift) {
-                                Alert.alert(
-                                  "Error",
-                                  "Shift details not found."
-                                );
-                                return;
-                              }
-                              navigation.navigate("StartJob", {
-                                booking: shift,
-                              });
-                            }}
-                          >
-                            <Text
-                              style={{
-                                color: "#fff",
-                                fontWeight: "bold",
-                                fontSize: 15,
-                              }}
-                            >
-                              Start Job
-                            </Text>
-                          </TouchableOpacity>
-                        )}
-                      </View>
-                    </View>
-                  </View>
-                );
-              }}
-              contentContainerStyle={{ padding: 16, paddingBottom: 100 }}
-            />
-          )}
-        </View>
-      )}
-      {activeTab === "History" && (
-        <View
-          style={{ flex: 1, justifyContent: "center", alignItems: "center" }}
-        >
-          <Text style={{ color: "#334eb8", fontSize: 18, fontWeight: "bold" }}>
-            History (Coming soon)
-          </Text>
-        </View>
-      )}
-      {/* Request Response Modal */}
+              <Text style={styles.applyFiltersBtnText}>Apply Filters</Text>
+            </TouchableOpacity>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Request Confirmation Modal */}
       <Modal
         visible={requestModalVisible}
-        transparent
         animationType="fade"
+        transparent
         onRequestClose={() => setRequestModalVisible(false)}
       >
-        <View
-          style={{
-            flex: 1,
-            justifyContent: "center",
-            alignItems: "center",
-            backgroundColor: "rgba(0,0,0,0.35)",
-          }}
-        >
-          <View
-            style={{
-              backgroundColor: "#fff",
-              borderRadius: 24,
-              padding: 28,
-              alignItems: "center",
-              width: 320,
-              maxWidth: "90%",
-            }}
-          >
-            {requestStatus === "success" && (
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setRequestModalVisible(false)}
+        />
+        <View style={styles.requestModalContent}>
+          <View style={styles.requestModalBody}>
+            {requestStatus === "success" ? (
               <LottieView
-                source={require("../../assets/lotties/success_request.json")}
+                source={require("../../assets/lotties/success_request.json")} // Make sure you have a success animation
                 autoPlay
                 loop={false}
-                style={{ width: 120, height: 120, marginBottom: 12 }}
+                style={{ width: 150, height: 150 }}
               />
+            ) : (
+              <Ionicons name="close-circle" size={80} color="#e53935" />
             )}
             <Text
-              style={{
-                fontSize: 18,
-                fontWeight: "bold",
-                color: requestStatus === "success" ? "#5bb780" : "#e53935",
-                marginBottom: 8,
-              }}
-            >
-              {requestStatus === "success" ? "Request Sent!" : "Request Failed"}
-            </Text>
-            <Text
-              style={{
-                fontSize: 15,
-                color: "#333",
-                marginBottom: 12,
-                textAlign: "center",
-              }}
+              style={
+                requestStatus === "success"
+                  ? styles.requestModalTextSuccess
+                  : styles.requestModalText
+              }
             >
               {requestStatus === "success"
-                ? "Your booking request was sent successfully."
-                : requestResponse?.error || "Something went wrong."}
+                ? "Request Sent Successfully!"
+                : requestResponse?.error ||
+                  "Failed to send request. Please try again."}
             </Text>
             <TouchableOpacity
-              style={{
-                backgroundColor: "#334eb8",
-                borderRadius: 8,
-                paddingVertical: 10,
-                paddingHorizontal: 24,
-                marginTop: 8,
-              }}
+              style={styles.requestModalButton}
               onPress={() => setRequestModalVisible(false)}
             >
-              <Text style={{ color: "#fff", fontWeight: "bold", fontSize: 15 }}>
-                Close
-              </Text>
+              <Text style={styles.requestModalButtonText}>OK</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      {/* Checkout Message */}
+      {checkoutMessage ? (
+        <View style={styles.checkoutMessageContainer}>
+          <Text style={styles.checkoutMessageText}>{checkoutMessage}</Text>
+        </View>
+      ) : null}
     </View>
   );
 };
 
 const styles = StyleSheet.create({
-  headerWrap: {
-    padding: 5,
-    borderBottomColor: "#e0e0e0",
-    alignItems: "left",
+  container: {
+    flex: 1,
+    backgroundColor: "#f8f9fa",
+  },
+  header: {
+    backgroundColor: "#ffbd59",
+    borderBottomLeftRadius: 20,
+    borderBottomRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 30,
+    paddingBottom: 20,
+    alignItems: "flex-start",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  titleContainer: {
+    width: "100%",
+  },
+  title: {
+    color: "#1d3491",
+    fontSize: 30,
+    fontWeight: "bold",
+    marginBottom: 4,
+  },
+  subtitle: {
+    color: "#1d3491",
+    fontSize: 13,
+    textAlign: "left",
+    opacity: 0.8,
+  },
+  tabsContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 12,
+    marginBottom: 8,
+    paddingHorizontal: 10,
+  },
+  tabsScrollViewContent: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 4,
+  },
+  tabButton: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 20,
+    backgroundColor: "#e6edff",
+    marginHorizontal: 6,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  tabButtonActive: {
+    backgroundColor: "#334eb8",
+  },
+  tabButtonText: {
+    color: "#334eb8",
+    fontWeight: "bold",
+    fontSize: 15,
+  },
+  tabButtonTextActive: {
+    color: "#fff",
   },
   bellBtn: {
     padding: 8,
-    borderRadius: 24,
+    borderRadius: 20,
     backgroundColor: "#e6edff",
-    marginRight: 10,
-  },
-  searchBarWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#fff",
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    marginTop: 15,
-    marginBottom: 15,
-    marginLeft: 10,
-    marginRight: 10,
+    marginLeft: 8,
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
     elevation: 2,
   },
-  searchInput: {
+  list: {
     flex: 1,
-    height: 40,
-    fontSize: 16,
-    color: "#334eb8",
-    padding: 10,
+    paddingHorizontal: 16,
   },
-  filterBtn: {
-    marginLeft: 8,
-    padding: 10,
-    borderRadius: 24,
-    backgroundColor: "#e6edff",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  filterDot: {
-    position: "absolute",
-    top: 4,
-    right: 4,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: "#e53935",
-  },
-  clearFiltersBtn: {
-    alignSelf: "flex-end",
-    backgroundColor: "#334eb8",
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    marginBottom: 12,
-  },
-  clearFiltersText: {
-    color: "#fff",
-    fontWeight: "bold",
-    fontSize: 14,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.5)",
-  },
-  modalContentWrap: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    padding: 8,
-  },
-  modalContent: {
-    width: "100%",
-    maxWidth: 420,
-    backgroundColor: "#fff",
-    borderRadius: 28,
-    padding: 20,
-    paddingBottom: 32,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  modalTitle: {
-    fontSize: 20,
-    color: "#334eb8",
-    fontWeight: "bold",
-    marginBottom: 18,
-  },
-  modalLabel: {
-    fontSize: 15,
-    color: "#666",
-    marginBottom: 10,
-    fontWeight: "bold",
-  },
-  pillsRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    marginBottom: 10,
-    gap: 6, // reduce gap between pills
-  },
-  pill: {
-    backgroundColor: "#e6edff",
-    borderRadius: 20,
-    paddingVertical: 8,
-    paddingHorizontal: 14,
-    marginRight: 6,
-    marginBottom: 6,
-    minWidth: 80,
-    alignItems: "center",
-  },
-  pillActive: {
-    backgroundColor: "#334eb8",
-  },
-  pillText: {
-    fontSize: 15,
-    color: "#334eb8",
-    fontWeight: "bold",
-  },
-  pillTextActive: {
-    color: "#fff",
-  },
-  modalApplyBtn: {
-    backgroundColor: "#334eb8",
-    borderRadius: 16,
-    paddingVertical: 16,
-    alignItems: "center",
-    marginTop: 12,
-    marginBottom: 4,
-    width: "100%",
+  listContent: {
+    paddingVertical: 10,
   },
   cardCollapsed: {
     backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-    marginHorizontal: 8,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 10,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
-    shadowRadius: 6,
-    elevation: 2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  cardHeaderCollapsed: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
   },
   jobTitleCollapsed: {
-    fontSize: 16,
-    color: "#334eb8",
-    fontWeight: "500",
-    marginBottom: 2,
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#333",
+    flexShrink: 1,
+  },
+  cardDetailsCollapsed: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
   },
   pillCollapsed: {
     backgroundColor: "#e6edff",
-    borderRadius: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
+    borderRadius: 15,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
     marginRight: 10,
-  },
-  pillTextCollapsed: {
-    fontSize: 14,
-    color: "#334eb8",
-    fontWeight: "500",
   },
   pillCollapsedDateandTime: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#e6edff",
-    borderRadius: 12,
-    paddingVertical: 6,
-    paddingHorizontal: 14,
+    borderRadius: 15,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+  },
+  pillTextCollapsed: {
+    color: "#334eb8",
+    fontSize: 12,
+    fontWeight: "600",
   },
   footerRowCollapsed: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
     marginTop: 10,
-    paddingHorizontal: 2,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+    paddingTop: 10,
   },
   postedAgoCollapsed: {
     fontSize: 12,
-    color: "#999",
-    marginLeft: 2,
+    color: "#888",
   },
   seeMoreCollapsed: {
     fontSize: 14,
     color: "#334eb8",
-    fontWeight: "500",
-    marginRight: 2,
+    fontWeight: "600",
   },
   cardExpanded: {
     backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 22,
-    marginBottom: 18,
-    marginHorizontal: 8,
+    borderRadius: 12,
+    padding: 20,
+    marginBottom: 10,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  cardHeaderExpanded: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 12,
   },
   jobTitleExpanded: {
-    fontSize: 18,
-    color: "#334eb8",
+    fontSize: 22,
     fontWeight: "bold",
-    marginBottom: 2,
+    color: "#333",
+    flexShrink: 1,
   },
   companyLineExpanded: {
     fontSize: 14,
     color: "#666",
-    marginBottom: 10,
-    marginLeft: 2,
+    marginBottom: 12,
+  },
+  cardDetailsExpanded: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 16,
   },
   pillExpanded: {
     backgroundColor: "#e6edff",
-    borderRadius: 12,
-    paddingVertical: 7,
-    paddingHorizontal: 16,
+    borderRadius: 15,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
     marginRight: 10,
-  },
-  pillTextExpanded: {
-    fontSize: 14,
-    color: "#334eb8",
-    fontWeight: "500",
   },
   pillExpandedDateandTime: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: "#e6edff",
-    borderRadius: 12,
-    paddingVertical: 7,
-    paddingHorizontal: 16,
+    borderRadius: 15,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  pillTextExpanded: {
+    color: "#334eb8",
+    fontSize: 13,
+    fontWeight: "600",
   },
   descriptionExpanded: {
-    fontSize: 14,
-    color: "#333",
-    lineHeight: 20,
-    marginBottom: 14,
-    marginTop: 2,
+    fontSize: 15,
+    color: "#555",
+    lineHeight: 22,
+    marginBottom: 10,
   },
   readMoreExpanded: {
     fontSize: 14,
     color: "#334eb8",
     fontWeight: "500",
-    marginTop: 8,
-    marginBottom: 8,
+    marginBottom: 15,
   },
   orgDetailsBox: {
-    backgroundColor: "#f9f9f9",
-    borderRadius: 12,
-    padding: 18,
-    marginTop: 14,
-    marginBottom: 8,
+    backgroundColor: "#f0f4f7",
+    borderRadius: 10,
+    padding: 15,
+    marginBottom: 15,
   },
   orgDetailsTitle: {
     fontSize: 16,
-    color: "#334eb8",
     fontWeight: "bold",
-    marginBottom: 10,
+    color: "#333",
+    marginBottom: 8,
   },
   orgNameExpanded: {
-    fontSize: 14,
-    color: "#111",
-    fontWeight: "500",
-    marginBottom: 6,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#444",
+    marginBottom: 4,
   },
   orgDescExpanded: {
     fontSize: 14,
     color: "#666",
-    marginBottom: 10,
+    marginBottom: 8,
   },
   orgAddressExpanded: {
     fontSize: 14,
     color: "#666",
-    flex: 1,
-    marginBottom: 2,
   },
   requestFormRowExpanded: {
     flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-    marginTop: 2,
+    justifyContent: "space-between",
+    marginBottom: 15,
   },
   inputExpanded: {
     flex: 1,
-    height: 40,
     borderWidth: 1,
-    borderColor: "#ccc",
+    borderColor: "#ddd",
     borderRadius: 8,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: "#334eb8",
-    marginRight: 8,
-    marginTop: 2,
+    padding: 12,
+    fontSize: 16,
+    marginHorizontal: 5,
+    backgroundColor: "#fff",
   },
   sendBtnExpanded: {
     backgroundColor: "#334eb8",
+    paddingVertical: 14,
     borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
     alignItems: "center",
-    marginTop: 4,
+    justifyContent: "center",
+    flex: 1,
+    marginHorizontal: 5,
   },
   sendBtnTextExpanded: {
     color: "#fff",
+    fontSize: 16,
     fontWeight: "bold",
-    fontSize: 15,
   },
   footerRowExpanded: {
     flexDirection: "row",
@@ -1445,6 +1438,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 14,
     paddingHorizontal: 2,
+    borderTopWidth: 1,
+    borderTopColor: "#eee",
+    paddingTop: 10,
   },
   postedAgoExpanded: {
     fontSize: 12,
@@ -1457,56 +1453,253 @@ const styles = StyleSheet.create({
     fontWeight: "500",
     marginRight: 2,
   },
-  loadMoreBtn: {
-    paddingVertical: 12,
+  emptyListText: {
+    textAlign: "center",
+    marginTop: 30,
+    fontSize: 16,
+    color: "#777",
+  },
+  errorText: {
+    textAlign: "center",
+    marginTop: 20,
+    fontSize: 16,
+    color: "red",
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  modalContentWrap: {
+    justifyContent: "flex-end",
+    flex: 1,
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 25,
+    maxHeight: "80%",
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: "bold",
+    marginBottom: 20,
+    color: "#333",
+    textAlign: "center",
+  },
+  modalLabel: {
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 10,
+    color: "#555",
+  },
+  pillsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 20,
+  },
+  pill: {
+    backgroundColor: "#f0f4f7",
+    borderRadius: 20,
+    paddingVertical: 8,
+    paddingHorizontal: 15,
+    marginRight: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+  },
+  pillActive: {
+    backgroundColor: "#334eb8",
+    borderColor: "#334eb8",
+  },
+  pillText: {
+    color: "#555",
+    fontSize: 14,
+  },
+  pillTextActive: {
+    color: "#fff",
+    fontWeight: "bold",
+  },
+  applyFiltersBtn: {
+    backgroundColor: "#334eb8",
+    paddingVertical: 15,
+    borderRadius: 10,
     alignItems: "center",
+    marginTop: 20,
+  },
+  applyFiltersBtnText: {
+    color: "#fff",
+    fontSize: 18,
+    fontWeight: "bold",
   },
   requestModalContent: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#fff",
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 24,
+    backgroundColor: "rgba(0,0,0,0.6)",
   },
   requestModalBody: {
-    width: "100%",
-    maxWidth: 400,
+    width: "80%",
+    backgroundColor: "#fff",
+    borderRadius: 15,
+    padding: 30,
     alignItems: "center",
-    marginBottom: 24,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 5,
+    elevation: 8,
   },
   requestModalText: {
-    fontSize: 16,
-    color: "#334eb8",
+    fontSize: 18,
+    color: "#e53935",
     textAlign: "center",
-    marginTop: 12,
+    marginTop: 20,
+    marginBottom: 25,
+    fontWeight: "500",
   },
   requestModalTextSuccess: {
-    fontSize: 18,
+    fontSize: 20,
     color: "#2e7d32",
     fontWeight: "bold",
     textAlign: "center",
-    marginTop: 12,
+    marginTop: 20,
+    marginBottom: 25,
   },
-  requestModalTextError: {
-    fontSize: 18,
-    color: "#e53935",
-    fontWeight: "bold",
-    textAlign: "center",
-    marginTop: 12,
-  },
-  requestModalBtn: {
+  requestModalButton: {
     backgroundColor: "#334eb8",
-    borderRadius: 16,
     paddingVertical: 12,
-    paddingHorizontal: 24,
+    paddingHorizontal: 40,
+    borderRadius: 8,
+  },
+  requestModalButtonText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  checkoutMessageContainer: {
+    position: "absolute",
+    bottom: 30,
+    left: 20,
+    right: 20,
+    backgroundColor: "#2e7d32",
+    padding: 15,
+    borderRadius: 10,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  checkoutMessageText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  myRequestCard: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 10,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: "#e0e0e0",
+  },
+  myRequestCardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#eee",
+    paddingBottom: 10,
+  },
+  myRequestTitle: {
+    fontSize: 17,
+    fontWeight: "bold",
+    color: "#333",
+    flexShrink: 1,
+  },
+  myRequestDetail: {
+    fontSize: 14,
+    color: "#555",
+    marginBottom: 5,
+  },
+  statusBadge: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    minWidth: 80,
     alignItems: "center",
   },
-  requestModalBtnText: {
-    color: "#fff",
+  statusBadgeText: {
+    fontSize: 11,
     fontWeight: "bold",
+  },
+  myRequestButtonsContainer: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 10,
+  },
+  startJobButton: {
+    backgroundColor: "#28a745", // Green for Start Job
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+    marginLeft: 10,
+  },
+  startJobButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  viewDetailsButton: {
+    backgroundColor: "#007bff", // Blue for View Details
+    paddingVertical: 10,
+    paddingHorizontal: 15,
+    borderRadius: 8,
+    marginLeft: 10,
+  },
+  viewDetailsButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "bold",
+  },
+  statusMessageContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 15,
+    justifyContent: "center",
+  },
+  statusMessageText: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#f8f9fa",
+  },
+  backButton: {
+    backgroundColor: "#334eb8",
+    paddingVertical: 12,
+    paddingHorizontal: 30,
+    borderRadius: 8,
+    marginTop: 20,
+  },
+  backButtonText: {
+    color: "#fff",
     fontSize: 16,
+    fontWeight: "bold",
   },
 });
 

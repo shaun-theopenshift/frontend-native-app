@@ -1,3 +1,4 @@
+export let staffServices = [];
 import {
   AntDesign,
   Feather,
@@ -7,15 +8,19 @@ import {
   MaterialIcons,
 } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
+import * as ImagePicker from "expo-image-picker"; // Import ImagePicker
 import * as SecureStore from "expo-secure-store";
 import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Dimensions,
   Image,
   KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -24,10 +29,14 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import Svg, { Path } from "react-native-svg";
+import auth0Config from "../auth0Config";
 
 const API_URL = "https://api.theopenshift.com/v1/users/me";
 const PATCH_URL = "https://api.theopenshift.com/v1/users/user";
 const AVAILABILITY_URL = "https://api.theopenshift.com/v1/users/availability";
+// Define the photo upload URL
+const UPLOAD_PHOTO_URL = "https://img.theopenshift.com/v1/upload/"; //
 
 const iconMap = {
   name: (
@@ -81,14 +90,6 @@ const iconMap = {
   emergency: (
     <MaterialIcons
       name="contacts"
-      size={15}
-      color="#334eb8"
-      style={{ marginRight: 8 }}
-    />
-  ),
-  tfn: (
-    <MaterialCommunityIcons
-      name="file-document-outline"
       size={15}
       color="#334eb8"
       style={{ marginRight: 8 }}
@@ -182,11 +183,11 @@ const StripeOnboardingSection = ({ user, accessToken }) => {
           headers: { Authorization: `Bearer ${accessToken || ""}` },
         }
       );
-      const data = await res.text();
+      const data = await res.json();
       console.log("Stripe onboarding API response:", data);
-      if (!res.ok || !data)
+      if (!res.ok || !data.url)
         throw new Error(data?.message || "Could not fetch onboarding link");
-      setOnboardLink(data.trim());
+      setOnboardLink(data.url.trim());
     } catch (e) {
       setError(e.message || "Failed to fetch onboarding link");
     }
@@ -241,30 +242,18 @@ const StripeOnboardingSection = ({ user, accessToken }) => {
             alignItems: "center",
           }}
           onPress={async () => {
-            setLoading(true);
-            setError("");
             try {
-              const res = await fetch(
-                "https://api.theopenshift.com/v1/payments/dashboard",
-                {
-                  headers: { Authorization: `Bearer ${accessToken || ""}` },
-                }
-              );
-              const data = await res.text();
-              if (!res.ok || !data)
-                throw new Error("Could not fetch dashboard link");
-              const url = data.trim().replace(/^"+|"+$/g, "");
-              setDashboardLink(url);
-              const supported = await Linking.canOpenURL(url);
-              if (supported || url.startsWith("http")) {
-                await Linking.openURL(url);
-              } else {
-                setError("Cannot open this link on your device.");
+              // Use the onboardLink from state, which is a string
+              const url = onboardLink.trim();
+              if (!url) {
+                setError("No onboarding URL returned.");
+                return;
               }
+              await Linking.openURL(url);
             } catch (e) {
-              setError("Could not open dashboard link.");
+              setError("Cannot open this link on your device.");
+              console.log("Error opening onboarding link:", e);
             }
-            setLoading(false);
           }}
         >
           <Text style={{ color: "#fff", fontWeight: "bold" }}>
@@ -272,7 +261,9 @@ const StripeOnboardingSection = ({ user, accessToken }) => {
           </Text>
         </TouchableOpacity>
         {error ? (
-          <Text style={{ color: "#e53935", marginTop: 8 }}>{error}</Text>
+          <Text style={{ color: "#e53935", marginTop: 8, textAlign: "center" }}>
+            {error}
+          </Text>
         ) : null}
       </View>
     );
@@ -334,6 +325,30 @@ const StripeOnboardingSection = ({ user, accessToken }) => {
 };
 
 const ProfileScreen = ({ route = {}, navigation }) => {
+  //Pull to refesh functionality
+  const [refreshing, setRefreshing] = useState(false);
+  const onRefresh = async () => {
+    setRefreshing(true);
+    // Re-fetch user and availability data
+    try {
+      // Fetch user
+      const userRes = await fetch(API_URL, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const userData = userRes.ok ? await userRes.json() : null;
+      setUser(userData);
+
+      // Fetch availability
+      const availRes = await fetch(AVAILABILITY_URL, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const availData = availRes.ok ? await availRes.json() : null;
+      setAvailabilityObj(availData?.availability || null);
+    } catch (e) {
+      // Optionally handle error
+    }
+    setRefreshing(false);
+  };
   const params = route.params || {};
   const [accessToken, setAccessToken] = useState("");
   const [tokenResolved, setTokenResolved] = useState(false); // Always false initially
@@ -352,6 +367,193 @@ const ProfileScreen = ({ route = {}, navigation }) => {
   // --- Additional Details Display/Edit Toggle ---
   const [isEditingAdditional, setIsEditingAdditional] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [profileCardExpanded, setProfileCardExpanded] = useState(false);
+
+  useEffect(() => {
+    if (__DEV__) {
+      SecureStore.setItemAsync("accessToken", "dev-token");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      staffServices = user.services || [];
+    }
+  }, [user]);
+
+  const AUTH0_DOMAIN = auth0Config.domain;
+
+  //Auth0 Data of the User - for now just to check the email verification
+  const fetchAuth0Profile = async (accessToken) => {
+    try {
+      const res = await fetch(`https://${AUTH0_DOMAIN}/userinfo`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch Auth0 profile");
+      return await res.json();
+    } catch (e) {
+      console.log("Auth0 profile fetch error:", e);
+      return null;
+    }
+  };
+  //Profile Complete Card
+  const availabilityComplete =
+    availabilityObj && Object.values(availabilityObj).some(Boolean);
+  const stripeComplete = user?.charges_enabled;
+  const [auth0Profile, setAuth0Profile] = useState(null);
+
+  useEffect(() => {
+    if (!accessToken) return;
+    (async () => {
+      const profile = await fetchAuth0Profile(accessToken);
+      setAuth0Profile(profile);
+    })();
+  }, [accessToken]);
+
+  const emailVerified = auth0Profile?.email_verified;
+  console.log("Email verified:", emailVerified);
+  const bgvComplete = false;
+  // Show card only if not all complete
+  const allComplete =
+    availabilityComplete && stripeComplete && emailVerified && bgvComplete;
+
+  // Profile Complete Card
+  const ProfileCompletionCard = ({
+    availabilityComplete,
+    stripeComplete,
+    emailVerified,
+    bgvComplete,
+    onPressAvailability,
+    onPressStripe,
+    onPressEmail,
+    onPressBGV,
+    expanded,
+    setExpanded,
+  }) => (
+    <View
+      style={{
+        backgroundColor: "#fff5f5",
+        borderColor: "#e53935",
+        borderWidth: 1,
+        borderRadius: 16,
+        padding: 18,
+        margin: 16,
+        marginBottom: 0,
+        shadowColor: "#e53935",
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+        width: "auto", //can also be 100%
+        alignSelf: "stretch",
+      }}
+    >
+      <TouchableOpacity
+        style={{ flexDirection: "row", alignItems: "center", flex: 1 }}
+        onPress={() => setExpanded((prev) => !prev)}
+        activeOpacity={0.8}
+      >
+        <MaterialCommunityIcons
+          name="alert-circle"
+          size={22}
+          color="#e53935"
+          style={{ marginRight: 8 }}
+        />
+        <Text style={{ color: "#e53935", fontWeight: "bold", fontSize: 18 }}>
+          Profile Incomplete!
+        </Text>
+        <Feather
+          name={expanded ? "chevron-up" : "chevron-down"}
+          size={20}
+          color="#e53935"
+          style={{ marginLeft: "auto" }}
+        />
+      </TouchableOpacity>
+      {expanded && (
+        <View style={{ marginTop: 10 }}>
+          {[
+            {
+              label: "Availability",
+              complete: availabilityComplete,
+              onPress: onPressAvailability,
+              action: "View",
+            },
+            {
+              label: "Stripe Onboarding",
+              complete: stripeComplete,
+              onPress: onPressStripe,
+              action: "View",
+            },
+            {
+              label: "Email Verification",
+              complete: emailVerified,
+              onPress: onPressEmail,
+              action: "View",
+            },
+            {
+              label: "Background Verification",
+              complete: bgvComplete,
+              onPress: onPressBGV,
+              action: bgvComplete ? "View" : "Complete",
+            },
+          ].map((item, idx) => (
+            <View
+              key={item.label}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                marginBottom: idx === 3 ? 0 : 10,
+                justifyContent: "space-between",
+              }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center" }}>
+                {item.complete ? (
+                  <AntDesign
+                    name="checkcircle"
+                    size={20}
+                    color="#34c759"
+                    style={{ marginRight: 8 }}
+                  />
+                ) : (
+                  <Feather
+                    name="circle"
+                    size={20}
+                    color="#bbb"
+                    style={{ marginRight: 8 }}
+                  />
+                )}
+                <Text
+                  style={{
+                    color: item.complete ? "#222" : "#888",
+                    fontWeight: item.complete ? "bold" : "normal",
+                    textDecorationLine: item.complete ? "none" : "line-through",
+                    fontSize: 16,
+                  }}
+                >
+                  {item.label}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={item.onPress} disabled={item.complete}>
+                <Text
+                  style={{
+                    color: item.complete ? "#bbb" : "#334eb8",
+                    fontWeight: "bold",
+                    fontSize: 15,
+                  }}
+                >
+                  {item.action}{" "}
+                  <Feather
+                    name="arrow-right"
+                    size={15}
+                    color={item.complete ? "#bbb" : "#334eb8"}
+                  />
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+        </View>
+      )}
+    </View>
+  );
 
   // Always resolve access_token from SecureStore on every focus (industry best practice)
   useFocusEffect(
@@ -474,7 +676,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
     }
   }, [user]);
 
-  // Fetch user details when accessToken changes
+  // Fetch user details when accessToken changes (redundant with useFocusEffect & tokenResolved useEffect, but kept for existing logic flow)
   useEffect(() => {
     if (!accessToken) return;
     setLoading(true);
@@ -494,7 +696,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
       });
   }, [accessToken]);
 
-  // Fetch availability separately and ensure correct token and user_id usage
+  // Fetch availability separately and ensure correct token and user_id usage (redundant, see above useEffect)
   useEffect(() => {
     if (!accessToken) return;
     fetch(AVAILABILITY_URL, {
@@ -525,7 +727,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
   const patchUser = async (data, onSuccess) => {
     setSaving(true);
     try {
-      const { availability, ...dataWithoutAvailability } = data;
+      const { availability, ...dataWithoutAvailability } = data; // Availability is patched separately
       const res = await fetch(PATCH_URL, {
         method: "PATCH",
         headers: {
@@ -536,7 +738,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
       });
       if (res.ok) {
         const updated = await res.json();
-        setUser(updated);
+        setUser(updated); // Update user state with patched data
         showToast("Details saved successfully!");
         onSuccess && onSuccess();
       } else {
@@ -550,38 +752,122 @@ const ProfileScreen = ({ route = {}, navigation }) => {
     setSaving(false);
   };
 
-  const patchAvailability = async (days, onSuccess) => {
+  const patchAvailability = async (daysObj, onSuccess) => {
     setSaving(true);
     try {
-      const filteredDays = Object.keys(days).reduce((acc, key) => {
-        if (days[key]) acc[key] = true;
-        return acc;
-      }, {});
+      const allDays = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+      ];
+      const payload = {};
+      allDays.forEach((day) => {
+        payload[day] = !!daysObj[day];
+      });
+
+      console.log("PATCHING AVAILABILITY:", payload);
+
       const res = await fetch(AVAILABILITY_URL, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ availability: filteredDays }),
+        body: JSON.stringify(payload),
       });
+
+      console.log("PATCH response status:", res.status);
+
       if (res.ok) {
         showToast("Availability saved!");
-        // Fetch latest availability for display
-        const getRes = await fetch(AVAILABILITY_URL, {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-        const data = getRes.ok ? await getRes.json() : null;
-        setAvailabilityObj(data?.availability || filteredDays);
-        onSuccess && onSuccess();
+        // ...rest of your code...
       } else {
+        const errorText = await res.text();
+        console.log("PATCH error response:", errorText);
         showToast("Failed to save availability.");
       }
     } catch (e) {
+      console.log("PATCH exception:", e);
       showToast("Error saving availability.");
     }
     setSaving(false);
   };
+
+  const auth0Id = user?.user_id; // <-- use user_id from your user object
+  const userId = auth0Id ? auth0Id.replace(/^auth0\|/, "") : null;
+  const dynamicProfileUrl = userId
+    ? `https://img.theopenshift.com/profile/${userId}.webp`
+    : null;
+  //console.log("auth0Id:", auth0Id);
+  //console.log("userId:", userId);
+  console.log("dynamicProfileUrl:", dynamicProfileUrl);
+
+  const handleProfilePhotoChange = async () => {
+    try {
+      const { status } =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert(
+          "Permission Required",
+          "Please enable media library permissions to upload photos."
+        );
+        return;
+      }
+
+      let result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.7,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setPhotoUploading(true);
+        const selectedImageUri = result.assets[0].uri;
+        if (!accessToken) {
+          Alert.alert("Authentication Error", "No access token found.");
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("file", {
+          uri: selectedImageUri,
+          name: "profile_photo.jpg",
+          type: "image/jpeg",
+        });
+
+        const res = await fetch("https://img.theopenshift.com/v1/upload/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "multipart/form-data",
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: formData,
+        });
+        const data = await res.json();
+        console.log("Upload response data:", data);
+        if (data.image_url) {
+          showToast("Profile photo uploaded!");
+        } else if (data.detail) {
+          Alert.alert("Upload Error", data.detail); // Show backend error
+        } else {
+          Alert.alert("Upload Error", "No image_url in response.");
+        }
+      }
+    } catch (e) {
+      console.log("Upload error:", e);
+      Alert.alert("Upload Error", "Could not upload image.");
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+  //For Design element
+  const screenWidth = Dimensions.get("window").width;
+  const semiCircleOverflow = 48;
 
   const handleLogout = async () => {
     try {
@@ -648,6 +934,47 @@ const ProfileScreen = ({ route = {}, navigation }) => {
   }
 
   if (!accessToken) {
+    if (__DEV__) {
+      // In development, don't auto-logout, just show a warning
+      return (
+        <View
+          style={{
+            flex: 1,
+            justifyContent: "center",
+            alignItems: "center",
+            backgroundColor: "#fff",
+          }}
+        >
+          <Text
+            style={{
+              fontSize: 18,
+              color: "#e53935",
+              fontWeight: "bold",
+              marginBottom: 16,
+            }}
+          >
+            No access token found (dev mode)
+          </Text>
+          <Text style={{ color: "#888", marginBottom: 16 }}>
+            You are in development mode. Auto-logout is disabled.
+          </Text>
+          <TouchableOpacity
+            onPress={handleLogout}
+            style={{
+              backgroundColor: "#334eb8",
+              borderRadius: 8,
+              paddingHorizontal: 18,
+              paddingVertical: 10,
+            }}
+          >
+            <Text style={{ color: "#fff", fontWeight: "bold" }}>
+              Log in again
+            </Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    // Production: auto-logout as before
     return (
       <View
         style={{
@@ -685,40 +1012,99 @@ const ProfileScreen = ({ route = {}, navigation }) => {
   }
 
   return (
-    <View style={{ flex: 1 }}>
-      {/* Floating Logout Button */}
-      <TouchableOpacity
+    <View style={{ flex: 1, position: "relative", backgroundColor: "#fff" }}>
+      <View
         style={{
           position: "absolute",
-          top: 40,
-          right: 20,
-          zIndex: 100,
-          backgroundColor: "#fff",
-          borderRadius: 24,
-          padding: 10,
-          shadowColor: "#000",
-          shadowOpacity: 0.1,
-          shadowRadius: 4,
-          elevation: 4,
+          top: 0,
+          left: -semiCircleOverflow,
+          width: screenWidth + semiCircleOverflow * 2,
+          zIndex: 0,
         }}
-        onPress={handleLogout}
-        accessibilityLabel="Logout"
       >
-        <Ionicons name="log-out-outline" size={24} color="#334eb8" />
-      </TouchableOpacity>
+        <Svg
+          width={screenWidth + semiCircleOverflow * 2}
+          height={(screenWidth + semiCircleOverflow * 2) / 2}
+          viewBox={`0 0 ${screenWidth + semiCircleOverflow * 2} ${
+            (screenWidth + semiCircleOverflow * 2) / 2
+          }`}
+        >
+          <Path
+            d={`
+        M0,0
+        A${(screenWidth + semiCircleOverflow * 2) / 2},${
+              (screenWidth + semiCircleOverflow * 2) / 2
+            } 0 0,1 ${screenWidth + semiCircleOverflow * 2},0
+        A${(screenWidth + semiCircleOverflow * 2) / 2},${
+              (screenWidth + semiCircleOverflow * 2) / 2
+            } 0 0,1 0,0
+        Z
+      `}
+            fill="#ffbd59"
+          />
+        </Svg>
+      </View>
+
+      {/* Floating Logout Button (REMAINS ON TOP) 
+    <TouchableOpacity
+      style={{
+        position: "absolute",
+        top: 30,
+        right: 25,
+        zIndex: 100, // Higher zIndex to ensure it's on top
+        backgroundColor: "#fff",
+        borderRadius: 24,
+        padding: 10,
+        shadowColor: "#000",
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+        elevation: 4,
+      }}
+      onPress={handleLogout}
+      accessibilityLabel="Logout"
+    >
+      <Ionicons name="log-out-outline" size={24} color="#334eb8" />
+    </TouchableOpacity>*/}
 
       <ScrollView
-        style={{ flex: 1, backgroundColor: "#fff" }}
-        contentContainerStyle={{ paddingBottom: 100 }}
-      >
-        <View style={styles.header}>
-          <Text style={styles.profileTitle}>Hi, {user.fname}!</Text>
-          <Image
-            source={{
-              uri: user.picture || "https://i.pravatar.cc/150",
-            }}
-            style={styles.avatar}
+        style={{ flex: 1 }}
+        contentContainerStyle={{
+          paddingTop: screenWidth / 6,
+          paddingBottom: 100,
+          backgroundColor: "transparent",
+        }}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={["#334eb8"]}
           />
+        }
+      >
+        <View style={[styles.header, { backgroundColor: "transparent" }]}>
+          <Text style={styles.profileTitle}>Hi, {user.fname}! 👋🏻</Text>
+          {/* Avatar with Upload Button */}
+          <View style={styles.avatarContainer}>
+            <Image
+              source={
+                dynamicProfileUrl
+                  ? { uri: dynamicProfileUrl }
+                  : require("../../assets/images/default-avatar.png")
+              }
+              style={styles.avatar}
+            />
+            <TouchableOpacity
+              onPress={handleProfilePhotoChange}
+              style={styles.cameraButton}
+              disabled={photoUploading}
+            >
+              {photoUploading ? (
+                <ActivityIndicator size="small" color="#fff" />
+              ) : (
+                <Ionicons name="camera" size={20} color="#fff" />
+              )}
+            </TouchableOpacity>
+          </View>
           {/* Verified/Unverified badge */}
           <View
             style={{
@@ -727,46 +1113,57 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               marginBottom: 6,
             }}
           >
-            <MaterialCommunityIcons
-              name="alert-circle"
-              size={18}
-              color="#e53935"
-              style={{ marginRight: 4 }}
-            />
-            <Text
-              style={{
-                color: "#e53935",
-                fontWeight: "bold",
-                fontSize: 15,
-                marginRight: 8,
-              }}
-            >
-              Unverified
-            </Text>
+            {!allComplete && (
+              <ProfileCompletionCard
+                availabilityComplete={availabilityComplete}
+                stripeComplete={stripeComplete}
+                emailVerified={emailVerified}
+                bgvComplete={bgvComplete}
+                onPressAvailability={() => {
+                  setTab("additional");
+                  setIsEditingAdditional(true);
+                }}
+                onPressStripe={() => {
+                  setTab("additional");
+                  setIsEditingAdditional(true);
+                }}
+                onPressEmail={() => {
+                  // Optionally show info or open email app
+                }}
+                onPressBGV={() => {
+                  if (!bgvComplete) {
+                    navigation.navigate("Compliance");
+                  }
+                  // Optionally handle "View" if bgvComplete is true
+                }}
+                expanded={profileCardExpanded}
+                setExpanded={setProfileCardExpanded}
+              />
+            )}
           </View>
           {/* Bio with edit icon out of the screen */}
           <View
             style={{
               flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "center",
+              alignItems: "flex-start",
+              justifyContent: "space-between",
               width: "100%",
-              position: "relative",
               marginBottom: 8,
+              paddingHorizontal: 24,
             }}
           >
-            <Text style={styles.bioText}>{user.bio}</Text>
+            <Text style={[styles.bioText, { flex: 1, marginBottom: 0 }]}>
+              {user.bio}
+            </Text>
             <TouchableOpacity
               onPress={() => {
                 setEditBio(user.bio || "");
                 setEditBioModalVisible(true);
               }}
               style={{
-                position: "absolute",
-                right: 18,
-                top: 0,
+                marginLeft: 8,
                 padding: 4,
-                zIndex: 2,
+                alignSelf: "flex-start",
               }}
             >
               <Ionicons name="create-outline" size={20} color="#334eb8" />
@@ -778,8 +1175,8 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                 styles.tabButton,
                 tab === "current" && {
                   ...styles.tabButtonActive,
-                  borderBottomWidth: 2,
-                  borderBottomColor: "#f55b5f",
+                  borderBottomWidth: 1,
+                  borderBottomColor: "#021870",
                 },
               ]}
               onPress={() => setTab("current")}
@@ -798,8 +1195,8 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                 styles.tabButton,
                 tab === "additional" && {
                   ...styles.tabButtonActive,
-                  borderBottomWidth: 2,
-                  borderBottomColor: "#f55b5f",
+                  borderBottomWidth: 1,
+                  borderBottomColor: "#021870",
                 },
               ]}
               onPress={() => setTab("additional")}
@@ -818,8 +1215,8 @@ const ProfileScreen = ({ route = {}, navigation }) => {
         {tab === "current" ? (
           <>
             <ProfileCard
-              color="#D6D6FF"
-              label="Personal information"
+              color="#ebeff8"
+              label="Personal Information"
               values={[
                 <View
                   style={{
@@ -886,7 +1283,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               }}
             />
             <ProfileCard
-              color="#A6F7E2"
+              color="#ebeff8"
               label="Emergency Contact"
               values={[
                 <View
@@ -917,26 +1314,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               }}
             />
             <ProfileCard
-              color="#fff"
-              label="Tax Information"
-              values={[
-                <View
-                  style={{ flexDirection: "row", alignItems: "center" }}
-                  key="tfn"
-                >
-                  {iconMap.tfn}
-                  <Text>
-                    {user.tfn === null ? "No TFN provided" : user.tfn}
-                  </Text>
-                </View>,
-              ]}
-              onEdit={() => {
-                setEditData({ tfn: user.tfn });
-                setEditModalVisible(true);
-              }}
-            />
-            <ProfileCard
-              color="#FFF7C2"
+              color="#ebeff8"
               label="Skills"
               values={
                 user.skills && user.skills.length
@@ -952,13 +1330,16 @@ const ProfileScreen = ({ route = {}, navigation }) => {
         ) : // --- Additional Details Horizontal Stepper ---
         isEditingAdditional ? (
           <HorizontalStepper
-            user={user}
+            key={JSON.stringify(user.availability)}
+            user={{ ...user, availability: availabilityObj }}
             patchUser={(data) =>
               patchUser(data, () => setIsEditingAdditional(false))
             }
+            patchAvailability={patchAvailability}
             onDone={() => setIsEditingAdditional(false)}
             onBack={() => setIsEditingAdditional(false)}
             accessToken={accessToken}
+            setParentAvailabilityObj={setAvailabilityObj}
           />
         ) : (
           <View style={{ padding: 18 }}>
@@ -980,7 +1361,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </TouchableOpacity>
             </View>
             {/* Availability */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <Feather
                   name="clock"
@@ -992,9 +1380,6 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                   Availability
                 </Text>
               </View>
-              <Text style={{ color: "#888", marginTop: 2 }}>
-                Support sessions don't need to fill each time slot completely.
-              </Text>
               <View
                 style={{
                   flexDirection: "row",
@@ -1040,7 +1425,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </View>
             </View>
             {/* Badges */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <Feather
                   name="star"
@@ -1049,7 +1441,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                   style={{ marginRight: 6 }}
                 />
                 <Text style={{ fontWeight: "bold", fontSize: 18 }}>Badges</Text>
-                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
+                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}>
                     <Text style={{color:'#334eb8', fontWeight:'bold'>Edit</Text>
                   </TouchableOpacity> */}
               </View>
@@ -1089,7 +1481,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </View>
             </View>
             {/* Vaccinations */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <View style={{ flexDirection: "row", alignItems: "center" }}>
                 <Feather
                   name="shield"
@@ -1100,7 +1499,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                 <Text style={{ fontWeight: "bold", fontSize: 18 }}>
                   Vaccinations
                 </Text>
-                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}}>
+                {/* <TouchableOpacity onPress={()=>setIsEditingAdditional(true)} style={{marginLeft:8}>
                     <Text style={{color:'#334eb8', fontWeight:'bold'}}>Edit</Text>
                   </TouchableOpacity> */}
               </View>
@@ -1122,7 +1521,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </View>
             </View>
             {/* Services Provided */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <Text
                 style={{ fontWeight: "bold", fontSize: 18, marginBottom: 6 }}
               >
@@ -1132,16 +1538,16 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
                 {(user.services || []).map((s, i) => {
                   const serviceMap = {
-                    everyday: "Everyday Activities Support",
-                    self_care: "Self-Care Assistance",
+                    //everyday: "Everyday Activities Support",
+                    self_care: "Personal Care Worker",
                     nursing: "Skilled Nursing Care",
-                    healthcare: "Allied Health Services",
+                    //healthcare: "Allied Health Services",
                   };
                   return (
                     <View
                       key={i}
                       style={{
-                        backgroundColor: "#e6edff",
+                        backgroundColor: "#f7f8fa",
                         borderRadius: 16,
                         paddingHorizontal: 14,
                         paddingVertical: 6,
@@ -1158,7 +1564,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </View>
             </View>
             {/* Languages */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <Text
                 style={{ fontWeight: "bold", fontSize: 18, marginBottom: 6 }}
               >
@@ -1179,7 +1592,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                     <View
                       key={i}
                       style={{
-                        backgroundColor: "#e6edff",
+                        backgroundColor: "#f7f8fa",
                         borderRadius: 16,
                         paddingHorizontal: 14,
                         paddingVertical: 6,
@@ -1201,7 +1614,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </View>
             </View>
             {/* Interests & Hobbies */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <Text
                 style={{ fontWeight: "bold", fontSize: 18, marginBottom: 6 }}
               >
@@ -1230,7 +1650,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                     <View
                       key={i}
                       style={{
-                        backgroundColor: "#e6edff",
+                        backgroundColor: "#f7f8fa",
                         borderRadius: 16,
                         paddingHorizontal: 14,
                         paddingVertical: 6,
@@ -1252,7 +1672,14 @@ const ProfileScreen = ({ route = {}, navigation }) => {
               </View>
             </View>
             {/* My Preferences */}
-            <View style={{ marginBottom: 16 }}>
+            <View
+              style={{
+                marginBottom: 16,
+                backgroundColor: "#e6edff",
+                borderRadius: 16,
+                padding: 16,
+              }}
+            >
               <Text
                 style={{ fontWeight: "bold", fontSize: 18, marginBottom: 6 }}
               >
@@ -1272,7 +1699,7 @@ const ProfileScreen = ({ route = {}, navigation }) => {
                     <View
                       key={i}
                       style={{
-                        backgroundColor: "#e6edff",
+                        backgroundColor: "#f7f8fa",
                         borderRadius: 16,
                         paddingHorizontal: 14,
                         paddingVertical: 6,
@@ -1502,8 +1929,10 @@ const HorizontalStepper = ({
   user,
   patchUser,
   onDone,
+  patchAvailability,
   onBack,
   accessToken,
+  setParentAvailabilityObj,
 }) => {
   const [stepIndex, setStepIndex] = useState(0);
   // Always initialize detailsData and availabilityObj from user prop
@@ -1517,7 +1946,6 @@ const HorizontalStepper = ({
   }));
   // Availability as boolean object for each day
   const [availabilityObj, setAvailabilityObj] = useState(() => {
-    // If user.availability is an object, use as is; if array, convert to object
     if (user.availability && !Array.isArray(user.availability))
       return user.availability;
     if (user.availability && Array.isArray(user.availability)) {
@@ -1546,6 +1974,28 @@ const HorizontalStepper = ({
       sunday: false,
     };
   });
+
+  useEffect(() => {
+    if (user.availability && !Array.isArray(user.availability)) {
+      setAvailabilityObj(user.availability);
+    } else if (user.availability && Array.isArray(user.availability)) {
+      const days = [
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+      ];
+      const obj = {};
+      days.forEach((day) => {
+        obj[day] = user.availability.includes(day);
+      });
+      setAvailabilityObj(obj);
+    }
+  }, [user.availability]);
+
   const stepperSections = [
     {
       key: "availability",
@@ -2040,10 +2490,10 @@ const HorizontalStepper = ({
             </Text>
             <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
               {[
-                { key: "everyday", label: "Everyday Activities Support" },
-                { key: "self_care", label: "Self-Care Assistance" },
+                //{ key: "everyday", label: "Everyday Activities Support" },
+                { key: "self_care", label: "Personal Care Assistance" },
                 { key: "nursing", label: "Skilled Nursing Care" },
-                { key: "healthcare", label: "Allied Health Services" },
+                //{ key: "healthcare", label: "Allied Health Services" },
               ].map((service) => (
                 <TouchableOpacity
                   key={service.key}
@@ -2091,11 +2541,11 @@ const HorizontalStepper = ({
                 padding: 12,
               }}
             >
-              <Text style={{ fontWeight: "bold", color: "#334eb8" }}>
-                Informational message
-              </Text>
+              <Text style={{ fontWeight: "bold", color: "#334eb8" }}>Note</Text>
               <Text style={{ marginTop: 4, color: "#444" }}>
-                Some additional text to explain said message.
+                The Service type you select requires a valid certification.
+                Changing the Service Type is possible only by contacting
+                support.
               </Text>
             </View>
           </View>
@@ -2204,11 +2654,16 @@ const HorizontalStepper = ({
                     // After save, GET latest availability
                     const getRes = await fetch(AVAILABILITY_URL, {
                       headers: {
-                        Authorization: `Bearer ${user.access_token || ""}`,
+                        Authorization: `Bearer ${accessToken || ""}`,
                       },
                     });
                     const data = getRes.ok ? await getRes.json() : null;
                     setAvailabilityObj(data?.availability || availabilityObj);
+                    if (typeof setParentAvailabilityObj === "function") {
+                      setParentAvailabilityObj(
+                        data?.availability || availabilityObj
+                      );
+                    }
                     onDone && onDone();
                   });
                 }
@@ -2273,11 +2728,21 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   profileTitle: {
+    backgroundColor: "#fe7239",
+    borderRadius: 16,
+    padding: 16,
     fontSize: 28,
     fontWeight: "bold",
     color: "#222",
     alignSelf: "flex-start",
     marginLeft: 24,
+    marginBottom: 12,
+  },
+  avatarContainer: {
+    position: "relative",
+    width: 90,
+    height: 90,
+    borderRadius: 45,
     marginBottom: 12,
   },
   avatar: {
@@ -2286,7 +2751,20 @@ const styles = StyleSheet.create({
     borderRadius: 45,
     borderWidth: 2,
     borderColor: "#eee",
-    marginBottom: 12,
+  },
+  cameraButton: {
+    position: "absolute",
+    bottom: 0,
+    right: 0,
+    backgroundColor: "#334eb8",
+    borderRadius: 20,
+    width: 36,
+    height: 36,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#fff",
+    elevation: 5,
   },
   tabRow: {
     flexDirection: "row",
@@ -2348,10 +2826,12 @@ const styles = StyleSheet.create({
   bioText: {
     color: "#666",
     fontSize: 16,
-    textAlign: "left",
+    textAlign: "justify",
     marginHorizontal: 24,
     marginBottom: 12,
-    padding: 5,
+    padding: 8,
+    backgroundColor: "#ffffff",
+    borderRadius: 8,
   },
   emptySection: {
     alignItems: "center",

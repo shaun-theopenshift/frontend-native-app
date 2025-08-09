@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "theopenshift-app",
+    "name": "TheOpenShift",
     "slug": "theopenshift-app",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -11,6 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.shaun13.theopenshiftapp",
+      "buildNumber": "1",   
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
@@ -20,7 +21,8 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.shaun13.theopenshiftapp"
     },
     "web": {
       "bundler": "metro",

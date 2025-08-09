@@ -10,6 +10,7 @@ import {
   Animated,
   Dimensions,
   Image,
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
@@ -27,6 +28,8 @@ import LottieView from "lottie-react-native";
 import GeoapifyAutocomplete from "../components/GeoapifyAutocomplete";
 
 const API_URL = "https://api.theopenshift.com/v1/users/user";
+// Define the image upload URL
+const UPLOAD_PHOTO_URL = "https://img.theopenshift.com/v1/upload/"; // Added UPLOAD_PHOTO_URL
 
 const { width } = Dimensions.get("window");
 
@@ -47,7 +50,7 @@ const ProfileCreateScreen = ({ route }) => {
   const [accessToken, setAccessToken] = useState(initialToken);
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({
-    profile_photo: null,
+    profile_photo: null, // This will now store the URL/identifier from the upload endpoint
     about: "",
     fname: "",
     lname: "",
@@ -151,13 +154,93 @@ const ProfileCreateScreen = ({ route }) => {
     return phoneNumber && phoneNumber.isValid() ? phoneNumber.number : "";
   };
 
+  // This function is crucial for uploading the photo and getting a URL
+  const uploadProfilePhoto = async (imageUri) => {
+    setLoading(true);
+    let latestToken = accessToken;
+    if (!latestToken && route?.params?.access_token) {
+      latestToken = route.params.access_token;
+      setAccessToken(latestToken);
+    }
+    if (!latestToken) {
+      latestToken = await SecureStore.getItemAsync("access_token");
+      setAccessToken(latestToken);
+    }
+    if (!latestToken) {
+      setLoading(false);
+      Alert.alert("Authentication Error", "You are not logged in. Please log in again to upload your photo.");
+      navigation.reset({ index: 0, routes: [{ name: "Splash" }] });
+      return null;
+    }
+
+    const formData = new FormData();
+    // CRITICAL: Ensure the field name is "file" as per your API documentation (image_896b46.png)
+    formData.append("file", {
+      uri: imageUri,
+      name: "profile_photo.jpg",
+      type: "image/jpeg",
+    });
+
+    try {
+      const res = await fetch(UPLOAD_PHOTO_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "multipart/form-data",
+          Authorization: `Bearer ${latestToken}`,
+        },
+        body: formData,
+      });
+
+      if (res.ok) {
+        // --- CRITICAL FIX START ---
+        // Backend returns a JSON object, not a plain string URL (image_8914ce.png)
+        const responseData = await res.json(); // Parse as JSON
+        if (responseData && responseData.image_url) {
+            Alert.alert("Success", "Profile photo uploaded successfully!");
+            return responseData.image_url; // Return only the image_url
+        } else {
+            Alert.alert("Upload Error", "Photo uploaded successfully but could not get image URL from response.");
+            return null;
+        }
+        // --- CRITICAL FIX END ---
+      } else {
+        const errorText = await res.text();
+        let errorMessage = "Failed to upload photo.";
+        try {
+            const errorJson = JSON.parse(errorText);
+            // Check for specific backend errors, e.g., missing 'file' field
+            if (errorJson && errorJson.detail && Array.isArray(errorJson.detail)) {
+                const fileError = errorJson.detail.find(d => d.loc && d.loc.includes('file') && d.type === 'missing');
+                if (fileError) {
+                    errorMessage = "The image file was not sent correctly. Please try again or choose a different image.";
+                } else {
+                    errorMessage = errorJson.detail.map(d => d.msg).join(", ");
+                }
+            } else {
+                errorMessage = errorText;
+            }
+        } catch (parseError) {
+            errorMessage = errorText; // Fallback to raw text if not JSON
+        }
+        Alert.alert("Upload Error", `Failed to upload photo: ${errorMessage}`);
+        return null;
+      }
+    } catch (e) {
+      Alert.alert("Network Error", "Could not connect to the upload service. Please check your internet connection.");
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
   const handleSubmit = async () => {
     setLoading(true);
 
      if (!validateStep()) {
-    setLoading(false);
-    return;
-  }
+        setLoading(false);
+        return;
+    }
     // Always get the latest access token: prefer route param, then SecureStore
     let latestToken = accessToken;
     if (!latestToken && route?.params?.access_token) {
@@ -174,6 +257,7 @@ const ProfileCreateScreen = ({ route }) => {
       navigation.reset({ index: 0, routes: [{ name: "Splash" }] });
       return;
     }
+
     const genderValue = form.gender ? form.gender.toLowerCase() : null;
     const payload = {
       fname: form.fname || null,
@@ -195,6 +279,12 @@ const ProfileCreateScreen = ({ route }) => {
       preferences: [],
       services: [],
     };
+
+    // If a profile photo has been selected and uploaded, include its URL/identifier
+    if (form.profile_photo) {
+        payload.profile_photo_url = form.profile_photo; // Use the URL from the successful photo upload
+    }
+
     try {
       const res = await fetch(API_URL, {
         method: "POST",
@@ -230,16 +320,36 @@ const ProfileCreateScreen = ({ route }) => {
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 0.5,
-      base64: true,
+      allowsEditing: true, // Enables a basic square cropper
+      aspect: [1, 1], // Ensures a square crop ratio
+      quality: 0.5, // Helps reduce file size
+      // CRITICAL FIX: Ensure base64: true is NOT present here.
+      // You are uploading the file, not directly using its base64 string for display.
     });
-    if (!result.canceled && result.assets && result.assets[0].base64) {
-      setForm((f) => ({
-        ...f,
-        profile_photo: `data:image/jpeg;base64,${result.assets[0].base64}`,
-      }));
+
+    if (!result.canceled && result.assets && result.assets[0].uri) {
+      const imageAsset = result.assets[0];
+      const fileSizeInBytes = imageAsset.fileSize; // Get file size in bytes
+      const MAX_FILE_SIZE_BYTES = 1 * 1024 * 1024; // 1MB limit
+
+      // Check for file size limit
+      if (fileSizeInBytes > MAX_FILE_SIZE_BYTES) {
+        Alert.alert(
+          "Image Too Large",
+          `Please select an image smaller than 1MB. (Current size: ${(fileSizeInBytes / (1024 * 1024)).toFixed(2)} MB)`
+        );
+        return; // Stop the function if image is too large
+      }
+
+      // CRITICAL: Call uploadProfilePhoto to send the image to the backend and get a URL back
+      const uploadedPhotoIdentifier = await uploadProfilePhoto(imageAsset.uri);
+      if (uploadedPhotoIdentifier) {
+        // CRITICAL: Set profile_photo to the URL received from the backend
+        setForm((f) => ({
+          ...f,
+          profile_photo: uploadedPhotoIdentifier,
+        }));
+      }
     }
   };
 
@@ -304,6 +414,7 @@ const ProfileCreateScreen = ({ route }) => {
             <View style={{ alignItems: "center", marginBottom: 18 }}>
               <TouchableOpacity onPress={pickImage} style={styles.avatarCircle}>
                 {form.profile_photo ? (
+                  // CRITICAL: Ensure form.profile_photo holds a valid URL
                   <Image
                     source={{ uri: form.profile_photo }}
                     style={styles.avatar}
@@ -317,10 +428,11 @@ const ProfileCreateScreen = ({ route }) => {
                 )}
               </TouchableOpacity>
               <Text
-                style={{ color: "#888", marginTop: 8, textAlign: "center" }}
+                style={{ color: "#888", marginTop: 8, textAlign: "center", fontSize: 13 }}
               >
                 Upload a professional photo of yourself. This will be visible to
-                the Aged Care Organisations.
+                the Aged Care Organisations. {"\n"}
+                (Recommended: square image, max 1MB)
               </Text>
             </View>
             <TextInput
@@ -373,7 +485,7 @@ const ProfileCreateScreen = ({ route }) => {
             <Text style={styles.label}>Address</Text>
             {/* Address Autocomplete */}
             <GeoapifyAutocomplete
-              apiKey={"4195db721fdd4b71bae0b85ead1327c3"}
+              apiKey={"4195db721fdd4b71bae0b85ead1327c3"} // CRITICAL: Ensure you have a valid Geoapify API key here 4195db721fdd4b71bae0b85ead1327c3
               value={form.address}
               onSelect={(item) => {
                 setForm((f) => ({
@@ -383,6 +495,7 @@ const ProfileCreateScreen = ({ route }) => {
                   suburb: item.city || f.suburb,
                   state: item.state_code || f.state,
                 }));
+                Keyboard.dismiss(); // Dismiss keyboard after selection
               }}
               style={{ marginBottom: 12 }}
             />

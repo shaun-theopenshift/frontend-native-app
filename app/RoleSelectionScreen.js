@@ -54,9 +54,9 @@ const RoleSelectionScreen = ({ route }) => {
         <View style={styles.avatarCircle}>
           <Image source={require('../assets/images/Org_roleselection.png')} style={styles.avatar} />
         </View>
-        <Text style={styles.title}>Organisation</Text>
+        <Text style={styles.title}>Aged Care Organisation</Text>
         <TouchableOpacity style={styles.hireButton} onPress={() => navigation.replace('ProfileOrg', { access_token })}>
-          <Text style={styles.hireButtonText}>Continue as Organization</Text>
+          <Text style={styles.hireButtonText}>Continue as Aged Care Organisation</Text>
         </TouchableOpacity>
         {/*<Text style={{ color:'white'}}>Just incase if we want to put some text here.</Text>*/}
       </View>
@@ -64,9 +64,9 @@ const RoleSelectionScreen = ({ route }) => {
         <View style={styles.avatarCircleSmall}>
           <Image source={require('../assets/images/Staff_roleselection.png')} style={styles.avatarSmall} />
         </View>
-        <Text style={styles.roleTitle}>Staff</Text>
+        <Text style={styles.roleTitle}>Independent Contractor</Text>
         <TouchableOpacity style={styles.freelancerButton} onPress={() => navigation.replace('ProfileCreate', { access_token })}>
-          <Text style={styles.freelancerButtonText}>Continue as Staff</Text>
+          <Text style={styles.freelancerButtonText}>Continue as Independent Contractor</Text>
         </TouchableOpacity>
         {/*<Text style={styles.learnText}>Just incase if we want to put some text here.</Text>*/}
       </View>
@@ -82,7 +82,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   topCard: {
-    backgroundColor: '#25325a',
+    backgroundColor: '#3565b4',
     borderBottomLeftRadius: 32,
     borderBottomRightRadius: 32,
     width: width,
@@ -119,7 +119,7 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   hireButton: {
-    backgroundColor: '#ff5a5f',
+    backgroundColor: '#fe743c',
     borderRadius: 8,
     paddingVertical: 12,
     paddingHorizontal: 32,
@@ -174,7 +174,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   freelancerButton: {
-    borderColor: '#ff5a5f',
+    borderColor: '#fe743c',
     borderWidth: 2,
     borderRadius: 8,
     paddingVertical: 12,
@@ -182,7 +182,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   freelancerButtonText: {
-    color: '#ff5a5f',
+    color: '#fe743c',
     fontWeight: 'bold',
     fontSize: 16,
   },
