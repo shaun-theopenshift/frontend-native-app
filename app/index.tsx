@@ -351,9 +351,9 @@ const SplashScreen: React.FC<SplashScreenProps> = ({ navigation }) => {
   };
 
   // Auth0 setup
-  const redirectUri = AuthSession.makeRedirectUri({
-    scheme: "theopenshiftapp",
-  });
+  const redirectUri = "theopenshiftapp://redirect";
+console.log("Redirect URI in use:", redirectUri);
+
   const discovery = {
     authorizationEndpoint: `https://${auth0Config.domain}/authorize`,
     tokenEndpoint: `https://${auth0Config.domain}/oauth/token`,
